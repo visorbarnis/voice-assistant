@@ -74,7 +74,7 @@ Detail schema: <a href="doc/images/voice-assistant-schema.png">schema</a>
 
 A Gerber file is available for a clean assembly.
 
-**Download fabrication files:** [Gerber_VOICE_ASSISTANT.zip](https://www.google.com/search?q=doc/fabrication/Gerber_VOICE_ASSISTANT.zip)
+**Download fabrication files:** [Gerber_VOICE_ASSISTANT.zip](doc/fabrication/Gerber_VOICE_ASSISTANT.zip)
 
 ---
 
