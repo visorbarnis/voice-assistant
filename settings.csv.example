@@ -1,0 +1,21 @@
+key,type,encoding,value
+wifi_settings,namespace,,
+ssid,data,string,your_ssid
+password,data,string,your_password
+max_retry,data,u32,5
+server_settings,namespace,,
+host,data,string,192.168.1.100
+location,data,string,living-room
+parameter,data,string,left side
+port,data,u32,8100
+ws_path,data,string,/ws/audio
+api_key,data,string,your_api_key
+client_mode,data,string,half-duplex
+speak_mode,data,string,half-duplex
+wake_word_model,data,string,wn9_mycroft_tts
+wake_mode,data,string,strict
+wake_level,data,u32,6
+audio_settings,namespace,,
+playback_rate,data,u32,16000
+buffer_start_ms,data,u32,100
+buffer_max_s,data,u32,4

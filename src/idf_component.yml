@@ -1,0 +1,19 @@
+dependencies:
+  # ESP-SR Speech Recognition framework
+  # Includes WakeNet, MultiNet, AFE pipeline
+  espressif/esp-sr:
+    version: "2.2.1"
+    rules:
+      - if: "idf_version >=5.0"
+  
+  # ESP DSP library for audio processing
+  espressif/esp-dsp: "1.6.0"
+  
+  # DL FFT library (required for esp-sr)
+  espressif/dl_fft: "0.3.1"
+  
+  # WebSocket client for voice server
+  espressif/esp_websocket_client: "1.2.3"
+  
+  # WS2812 LED Strip Driver (RMT backend)
+  espressif/led_strip: "^2.5.3"

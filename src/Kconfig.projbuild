@@ -1,0 +1,141 @@
+menu "Voice Assistant Configuration"
+
+    menu "WiFi Configuration"
+        config WIFI_SSID
+            string "WiFi SSID"
+            default "your_ssid"
+            help
+                SSID (network name) for the ESP32 to connect to.
+
+        config WIFI_PASSWORD
+            string "WiFi Password"
+            default "your_password"
+            help
+                WiFi password (WPA or WPA2).
+                Can be left blank for open networks.
+
+        config WIFI_MAXIMUM_RETRY
+            int "Maximum retry"
+            default 5
+            help
+                Set the maximum number of retries to avoid station reconnecting
+                to the AP indefinitely in case of failure.
+    endmenu
+
+    menu "Voice Server Configuration"
+        config VOICE_SERVER_HOST
+            string "Voice Server Host"
+            default "192.168.1.100"
+            help
+                Hostname or IP address of the voice server.
+
+        config VOICE_SERVER_PORT
+            int "Voice Server Port"
+            default 8100
+            help
+                Port number of the voice server WebSocket endpoint.
+
+        config VOICE_WS_PATH
+            string "WebSocket Path"
+            default "/ws/audio"
+            help
+                WebSocket endpoint path on the voice server.
+
+        config VOICE_API_KEY
+            string "API Key"
+            default "your_api_key"
+            help
+                API Key for authentication (Bearer token).
+
+        config VOICE_CLIENT_MODE
+            string "Client Mode"
+            default "full-duplex"
+            help
+                Client mode sent in X-Client-Mode header (e.g. full-duplex, half-duplex).
+    endmenu
+
+    menu "Wake Word Configuration"
+        config WAKE_WORD_MODEL
+            string "Wake-Word Model Name"
+            default "wn9_mycroft_tts"
+            help
+                WakeNet model name requested by AFE at runtime (for example:
+                wn9_mycroft_tts, wn9_hilexin, wn9_alexa). The selected model
+                must also be enabled in SR_WN_* options from ESP-SR.
+    endmenu
+
+    menu "Audio Configuration"
+        config AUDIO_PLAYBACK_SAMPLE_RATE
+            int "Playback Sample Rate (Hz)"
+            default 16000
+            help
+                Sample rate for audio playback from server.
+                Server sends audio at this rate.
+
+        config AUDIO_BUFFER_START_THRESHOLD_MS
+            int "Playback Buffer Start Threshold (ms)"
+            default 300
+            help
+                Amount of audio to buffer before starting playback.
+                Higher values increase latency but reduce dropouts.
+
+        config AUDIO_BUFFER_MAX_SECONDS
+            int "Maximum Playback Buffer Size (seconds)"
+            default 4
+            help
+                Maximum size of the playback ring buffer in seconds.
+                Used to prevent buffer overflow when server sends faster than realtime.
+
+        config SPEAK_MODE
+            string "Speak Mode (full-duplex | half-duplex)"
+            default "full-duplex"
+            help
+                Select microphone behavior during playback:
+                - "full-duplex": keep mic streaming while audio plays (current behavior).
+                - "half-duplex": pause mic streaming while playback is active
+                  (including buffered audio).
+
+        config VOICE_HALF_DUPLEX_MODE
+            bool "Force Half-Duplex Mode"
+            default n
+            help
+                Deprecated. Use SPEAK_MODE instead.
+                If enabled, microphone input will be muted (zeros sent) while
+                audio is being played back from the server.
+                Enable this if AEC is not effective or if you want strict half-duplex.
+
+        config HALF_DUPLEX_WHEN_AEC_DISABLED
+            bool "Half-duplex when AEC disabled"
+            default y
+            help
+                Deprecated. Use SPEAK_MODE instead.
+                When AEC is disabled, pause mic streaming while server audio
+                is playing, and resume when playback ends.
+
+        config AEC_ENABLED
+            bool "Enable AEC (Acoustic Echo Cancellation)"
+            default n
+            help
+                Enable hardware-accelerated echo cancellation using ESP-AFE.
+
+        config AEC_FILTER_LENGTH
+            int "AEC Filter Length (1-7)"
+            default 5
+            range 1 7
+            depends on AEC_ENABLED
+            help
+                Higher values = better cancellation but more CPU usage.
+                Recommended: 4-7 for ESP32-S3.
+
+        config AEC_REF_DELAY_MS
+            int "AEC Reference Delay (ms)"
+            default 10
+            range 0 500
+            depends on AEC_ENABLED
+            help
+                Additional delay applied to the reference signal to align with
+                the mic capture path (I2S TX+RX latency + acoustic delay).
+                Increase if echo leaks through; decrease if speech is muffled.
+    endmenu
+
+endmenu

@@ -1,0 +1,88 @@
+# ==============================================================================
+# ESP-IDF SDK Configuration defaults
+# Wake-word project on ESP32-S3 DevKitC-1
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Flash and partitions
+# ------------------------------------------------------------------------------
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# ------------------------------------------------------------------------------
+# PSRAM configuration (CRITICAL for ESP-SR!)
+# ESP32-S3 DevKitC-1 has 8MB Octal PSRAM
+# ------------------------------------------------------------------------------
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# Allow using PSRAM as heap
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+CONFIG_SPIRAM_MEMTEST=y
+
+# ------------------------------------------------------------------------------
+# ESP-SR Speech Recognition
+# ------------------------------------------------------------------------------
+# Store models in flash
+CONFIG_MODEL_IN_FLASH=y
+
+# ------------------------------------------------------------------------------
+# AEC tuning (ESP-AFE)
+# ------------------------------------------------------------------------------
+# ESP AEC is disabled. Server-side WebRTC AEC is used to avoid
+# conflict between two AEC systems (ESP-AFE + WebRTC). Raw PCM is sent to server.
+CONFIG_AEC_ENABLED=n
+#CONFIG_AEC_FILTER_LENGTH=7
+#CONFIG_AEC_REF_DELAY_MS=0
+
+# WakeNet 9 model
+CONFIG_SR_WN_WN9_MYCROFT_TTS=y
+# CONFIG_SR_WN_WN9_HILEXIN is not set
+CONFIG_WAKE_WORD_MODEL="wn9_mycroft_tts"
+
+# ------------------------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------------------------
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
+
+# ------------------------------------------------------------------------------
+# FreeRTOS
+# ------------------------------------------------------------------------------
+CONFIG_FREERTOS_HZ=1000
+
+# ------------------------------------------------------------------------------
+# Compiler
+# ------------------------------------------------------------------------------
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# ==============================================================================
+# WiFi and Voice Server configuration
+# ==============================================================================
+
+# Runtime network and audio settings were moved to settings.csv
+# (NVS partition provisioning).
+# Fallback values now come from Kconfig defaults.
+
+# AEC tuning (local)
+CONFIG_AEC_FILTER_LENGTH=4
+CONFIG_AEC_REF_DELAY_MS=137
+
+# half duplex
+CONFIG_HALF_DUPLEX_WHEN_AEC_DISABLED=y
+CONFIG_AEC_ENABLED=n
+
+
+# ------------------------------------------------------------------------------
+# Voice Assistant Auth & Mode
+# ------------------------------------------------------------------------------
+# API key and client mode are now provided via settings.csv (NVS).
+
+# CONFIG_SR_WN_WN9_JARVIS_TTS is not set
