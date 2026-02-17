@@ -26,10 +26,13 @@ type wakeModelCatalog struct {
 	Models        []string
 }
 
+type wakeModelProgress func(string)
+
 var wakeModelSanitizer = regexp.MustCompile(`[^A-Z0-9]+`)
 
-func discoverWakeModelCatalog(projectRoot string) (wakeModelCatalog, error) {
+func discoverWakeModelCatalog(projectRoot string, progress wakeModelProgress) (wakeModelCatalog, error) {
 	catalog := wakeModelCatalog{}
+	reportWakeModelProgress(progress, "Load available wake_word models...")
 	if projectRoot == "" {
 		return catalog, errors.New("project root is empty")
 	}
@@ -44,12 +47,14 @@ func discoverWakeModelCatalog(projectRoot string) (wakeModelCatalog, error) {
 		return catalog, nil
 	}
 
-	frameworkPath, err := ensureCachedFramework(projectRoot)
+	reportWakeModelProgress(progress, "Local wake-word models not found. Trying to download esp-sr package...")
+	frameworkPath, err := ensureCachedFramework(projectRoot, progress)
 	if err == nil {
 		models, listErr := listWakeModelsInFramework(frameworkPath)
 		if listErr == nil && len(models) > 0 {
 			catalog.FrameworkPath = frameworkPath
 			catalog.Models = models
+			reportWakeModelProgress(progress, "Wake-word models are ready.")
 			return catalog, nil
 		}
 	}
@@ -57,6 +62,7 @@ func discoverWakeModelCatalog(projectRoot string) (wakeModelCatalog, error) {
 	fallback := listWakeModelsFromSdkconfigSymbols(projectRoot)
 	if len(fallback) > 0 {
 		catalog.Models = fallback
+		reportWakeModelProgress(progress, "Wake-word models loaded from sdkconfig symbols.")
 		return catalog, nil
 	}
 
@@ -101,7 +107,7 @@ func applyWakeModelSelection(projectRoot string, catalog wakeModelCatalog, model
 	}
 
 	if len(catalog.Models) == 0 {
-		detected, err := discoverWakeModelCatalog(projectRoot)
+		detected, err := discoverWakeModelCatalog(projectRoot, nil)
 		if err != nil {
 			return err
 		}
@@ -114,7 +120,7 @@ func applyWakeModelSelection(projectRoot string, catalog wakeModelCatalog, model
 	frameworkPath := catalog.FrameworkPath
 	if frameworkPath == "" {
 		var err error
-		frameworkPath, err = ensureCachedFramework(projectRoot)
+		frameworkPath, err = ensureCachedFramework(projectRoot, nil)
 		if err != nil {
 			return err
 		}
@@ -225,7 +231,7 @@ func listWakeModelsFromSdkconfigSymbols(projectRoot string) []string {
 	return models
 }
 
-func ensureCachedFramework(projectRoot string) (string, error) {
+func ensureCachedFramework(projectRoot string, progress wakeModelProgress) (string, error) {
 	cacheRoot := filepath.Join(projectRoot, ".local", "esp-sr-cache")
 	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
 		return "", err
@@ -245,12 +251,14 @@ func ensureCachedFramework(projectRoot string) (string, error) {
 
 	var lastErr error
 	for _, url := range urls {
+		reportWakeModelProgress(progress, fmt.Sprintf("Downloading wake-word package: %s", url))
 		archivePath, err := downloadArchiveToTemp(cacheRoot, url)
 		if err != nil {
 			lastErr = err
 			continue
 		}
 
+		reportWakeModelProgress(progress, "Extracting wake-word package...")
 		extractRoot, err := extractTarGzToTemp(cacheRoot, archivePath)
 		_ = os.Remove(archivePath)
 		if err != nil {
@@ -277,6 +285,7 @@ func ensureCachedFramework(projectRoot string) (string, error) {
 
 		models, listErr := listWakeModelsInFramework(targetPath)
 		if listErr == nil && len(models) > 0 {
+			reportWakeModelProgress(progress, "Wake-word models are ready.")
 			return targetPath, nil
 		}
 	}
@@ -285,6 +294,13 @@ func ensureCachedFramework(projectRoot string) (string, error) {
 		lastErr = errors.New("failed to cache esp-sr framework")
 	}
 	return "", lastErr
+}
+
+func reportWakeModelProgress(progress wakeModelProgress, msg string) {
+	if progress == nil {
+		return
+	}
+	progress(strings.TrimSpace(msg))
 }
 
 func detectEspSrVersion(projectRoot string) string {

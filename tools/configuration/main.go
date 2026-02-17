@@ -90,7 +90,9 @@ func main() {
 	}
 
 	projectRoot := filepath.Dir(path)
-	wakeCatalog, wakeErr := discoverWakeModelCatalog(projectRoot)
+	wakeCatalog, wakeErr := discoverWakeModelCatalog(projectRoot, func(msg string) {
+		fmt.Fprintln(os.Stderr, msg)
+	})
 	if wakeErr != nil {
 		fmt.Fprintf(os.Stderr, "Wake-word model discovery warning: %v\n", wakeErr)
 	}
@@ -515,7 +517,7 @@ func (s *uiState) openSpecEditor(title string, specs []fieldSpec, helpText strin
 				s.showError(err)
 				return
 			}
-			if refreshed, err := discoverWakeModelCatalog(s.projectRoot); err == nil && len(refreshed.Models) > 0 {
+			if refreshed, err := discoverWakeModelCatalog(s.projectRoot, nil); err == nil && len(refreshed.Models) > 0 {
 				s.wakeCatalog = refreshed
 			}
 		}

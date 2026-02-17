@@ -71,7 +71,7 @@ func TestApplyWakeModelSelectionStagesAndUpdates(t *testing.T) {
 		t.Fatalf("write sdkconfig.defaults: %v", err)
 	}
 
-	catalog, err := discoverWakeModelCatalog(projectRoot)
+	catalog, err := discoverWakeModelCatalog(projectRoot, nil)
 	if err != nil {
 		t.Fatalf("discoverWakeModelCatalog: %v", err)
 	}
