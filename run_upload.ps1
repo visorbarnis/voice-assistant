@@ -285,9 +285,18 @@ try {
             [Parameter(Mandatory = $true)][string[]]$Args
         )
 
-        & $PioExe -c $ProjectConfigPath @Args
+        $effectiveArgs = @($Args)
+        if ($effectiveArgs.Count -gt 0 -and $effectiveArgs[0] -eq "run") {
+            $tail = @()
+            if ($effectiveArgs.Count -gt 1) {
+                $tail = $effectiveArgs[1..($effectiveArgs.Count - 1)]
+            }
+            $effectiveArgs = @("run", "-d", $RootDir, "-c", $ProjectConfigPath) + $tail
+        }
+
+        & $PioExe @effectiveArgs
         if ($LASTEXITCODE -ne 0) {
-            throw "Command failed: $PioExe $($Args -join ' ')"
+            throw "Command failed: $PioExe $($effectiveArgs -join ' ')"
         }
     }
 
