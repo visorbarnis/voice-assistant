@@ -102,6 +102,10 @@ dkms.conf
 .env
 settings.csv
 .local
+
+# Keep Windows settings configurator binaries in repo.
+!tools/settings-configurator-windows-amd64.exe
+!tools/settings-configurator-windows-arm64.exe
 .pio/
 .pio_core/
 .vscode/
