@@ -280,6 +280,20 @@ try {
         return $arm64Config
     }
 
+    function Resolve-PlatformIoCoreDir {
+        # Keep PlatformIO cache path short on Windows to avoid MAX_PATH issues
+        # when unpacking large esp-idf archives (especially in nested test data).
+        $coreRoot = Join-Path $env:SystemDrive "pio-core"
+        $projectName = Split-Path -Leaf $RootDir
+        if ([string]::IsNullOrWhiteSpace($projectName)) {
+            $projectName = "project"
+        }
+        $projectName = ($projectName -replace '[^A-Za-z0-9._-]', "_")
+        $coreDir = Join-Path $coreRoot $projectName
+        New-Item -ItemType Directory -Force -Path $coreDir | Out-Null
+        return $coreDir
+    }
+
     function Invoke-Pio {
         param(
             [Parameter(Mandatory = $true)][string[]]$Args
@@ -367,7 +381,8 @@ try {
 
     Ensure-Windows
     Ensure-LocalPlatformIO
-    $env:PLATFORMIO_CORE_DIR = Join-Path $RootDir ".pio_core"
+    $env:PLATFORMIO_CORE_DIR = Resolve-PlatformIoCoreDir
+    Write-Host "Using PlatformIO core dir: $env:PLATFORMIO_CORE_DIR"
     $ProjectConfigPath = Resolve-ProjectConfigPath
 
     if (-not $SkipClean) {
