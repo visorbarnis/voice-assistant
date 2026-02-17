@@ -68,12 +68,8 @@ try {
         }
 
         $arch = Resolve-WindowsArch
-        $candidateInstallers = @("Miniforge3-Windows-$arch.exe")
-        if ($arch -eq "arm64") {
-            # Some Miniforge releases do not publish a native Windows ARM64 installer.
-            # Fall back to x86_64 installer (runs under emulation).
-            $candidateInstallers += "Miniforge3-Windows-x86_64.exe"
-        }
+        $installerName = "Miniforge3-Windows-$arch.exe"
+        $url = "https://github.com/conda-forge/miniforge/releases/latest/download/$installerName"
 
         Write-Host "Installing local Python (Miniforge) into: $MiniforgeDir"
 
@@ -82,29 +78,10 @@ try {
             Remove-Item -Recurse -Force $MiniforgeDir
         }
 
-        $installerPath = $null
+        $installerPath = Join-Path $LocalDir $installerName
 
         try {
-            foreach ($installerName in $candidateInstallers) {
-                $url = "https://github.com/conda-forge/miniforge/releases/latest/download/$installerName"
-                $candidatePath = Join-Path $LocalDir $installerName
-                try {
-                    Download-File -Url $url -OutFile $candidatePath
-                    $installerPath = $candidatePath
-                    if ($installerName -ne "Miniforge3-Windows-$arch.exe") {
-                        Write-Host "Miniforge fallback selected: $installerName"
-                    }
-                    break
-                }
-                catch {
-                    Write-Host "Installer unavailable: $installerName"
-                    Remove-Item -Force $candidatePath -ErrorAction SilentlyContinue
-                }
-            }
-
-            if (-not $installerPath) {
-                throw "Failed to download Miniforge installer for Windows/$arch."
-            }
+            Download-File -Url $url -OutFile $installerPath
 
             $arguments = @(
                 "/InstallationType=JustMe"
