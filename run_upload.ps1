@@ -14,6 +14,7 @@ $PioExe = Join-Path $PioVenvDir "Scripts\pio.exe"
 $MiniforgeDir = Join-Path $LocalDir "miniforge3"
 $MiniforgePython = Join-Path $MiniforgeDir "python.exe"
 $UploadPortFile = Join-Path $LocalDir "upload_port"
+$ProjectConfigPath = Join-Path $RootDir "platformio.ini"
 
 Push-Location $RootDir
 
@@ -240,12 +241,39 @@ try {
         throw "Failed to prepare local PlatformIO CLI in $PioVenvDir"
     }
 
+    function Resolve-ProjectConfigPath {
+        $baseConfig = Join-Path $RootDir "platformio.ini"
+        if (-not (Test-Path $baseConfig)) {
+            throw "platformio.ini not found: $baseConfig"
+        }
+
+        if ((Resolve-WindowsArch) -ne "arm64") {
+            return $baseConfig
+        }
+
+        $primarySpec = "platformio/toolchain-riscv32-esp@14.2.0+20241119"
+        $fallbackSpec = "platformio/toolchain-riscv32-esp@13.2.0+20240530"
+        $content = Get-Content -Raw -Path $baseConfig
+
+        if ($content -notmatch [regex]::Escape($primarySpec)) {
+            return $baseConfig
+        }
+
+        $patched = $content -replace [regex]::Escape($primarySpec), $fallbackSpec
+        New-Item -ItemType Directory -Force -Path $LocalDir | Out-Null
+
+        $arm64Config = Join-Path $LocalDir "platformio.windows-arm64.ini"
+        Set-Content -Path $arm64Config -Value $patched -Encoding Ascii
+        Write-Host "Windows ARM64 detected: using fallback toolchain '$fallbackSpec'."
+        return $arm64Config
+    }
+
     function Invoke-Pio {
         param(
             [Parameter(Mandatory = $true)][string[]]$Args
         )
 
-        & $PioExe @Args
+        & $PioExe -c $ProjectConfigPath @Args
         if ($LASTEXITCODE -ne 0) {
             throw "Command failed: $PioExe $($Args -join ' ')"
         }
@@ -319,6 +347,7 @@ try {
     Ensure-Windows
     Ensure-LocalPlatformIO
     $env:PLATFORMIO_CORE_DIR = Join-Path $RootDir ".pio_core"
+    $ProjectConfigPath = Resolve-ProjectConfigPath
 
     if (-not $SkipClean) {
         Invoke-Pio -Args @("run", "-e", $EnvName, "-t", "fullclean")
