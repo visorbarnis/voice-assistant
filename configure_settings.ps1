@@ -32,16 +32,12 @@ $arch = switch ($archRaw) {
 
 $binTarget = Join-Path $ToolsDir ("settings-configurator-{0}-{1}.exe" -f $os, $arch)
 $binFallback = Join-Path $ToolsDir "settings-configurator.exe"
-$binFallbackNoExt = Join-Path $ToolsDir "settings-configurator"
 
 if (Test-Path $binTarget) {
     $bin = $binTarget
 }
 elseif (Test-Path $binFallback) {
     $bin = $binFallback
-}
-elseif (Test-Path $binFallbackNoExt) {
-    $bin = $binFallbackNoExt
 }
 else {
     Write-Host "Configurator binary not found. Building current platform..."
@@ -52,9 +48,6 @@ else {
     }
     elseif (Test-Path $binFallback) {
         $bin = $binFallback
-    }
-    elseif (Test-Path $binFallbackNoExt) {
-        $bin = $binFallbackNoExt
     }
     else {
         throw "Failed to build configurator binary."
