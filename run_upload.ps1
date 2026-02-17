@@ -27,6 +27,18 @@ try {
     }
 
     function Resolve-WindowsArch {
+        # In emulated shells (for example x64 PowerShell on Windows ARM64),
+        # PROCESSOR_ARCHITECTURE can report AMD64. Query hardware architecture first.
+        try {
+            $cpuArch = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Architecture
+            switch ([int]$cpuArch) {
+                12 { return "arm64" }  # ARM64
+                9 { return "x86_64" }  # x64
+            }
+        }
+        catch {
+        }
+
         $archRaw = $env:PROCESSOR_ARCHITECTURE
         if ($env:PROCESSOR_ARCHITEW6432) {
             $archRaw = $env:PROCESSOR_ARCHITEW6432
