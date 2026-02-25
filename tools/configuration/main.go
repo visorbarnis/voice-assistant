@@ -120,7 +120,7 @@ func main() {
 				state.showError(err)
 			}
 			return nil
-		case event.Rune() == 'q' || event.Rune() == 'Q':
+		case shouldHandleExitShortcut(event, state.frontPageName(), state.isMainMenuFocused()):
 			state.requestExit()
 			return nil
 		}
@@ -131,6 +131,30 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func (s *uiState) frontPageName() string {
+	if s.pages == nil {
+		return ""
+	}
+	name, _ := s.pages.GetFrontPage()
+	return name
+}
+
+func (s *uiState) isMainMenuFocused() bool {
+	return s.menu != nil && s.menu.HasFocus()
+}
+
+func shouldHandleExitShortcut(event *tcell.EventKey, activePage string, menuFocused bool) bool {
+	if event == nil || activePage != "main" || !menuFocused {
+		return false
+	}
+	if event.Key() != tcell.KeyRune || event.Modifiers() != tcell.ModNone {
+		return false
+	}
+
+	r := event.Rune()
+	return r == 'q' || r == 'Q'
 }
 
 func (s *uiState) buildMainUI() {
