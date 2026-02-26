@@ -43,6 +43,7 @@
 #include "led_control.h"
 #include "ntp_sync.h"
 #include "runtime_config.h"
+#include "session_state_bridge.h"
 #include "voice_client.h"
 #include "wifi_manager.h"
 
@@ -434,6 +435,19 @@ static void on_voice_session_ended(void) {
 
   // Non-blocking beep to indicate return to wake-word mode
   play_beep_async(440, 100); // A4 - 100ms
+}
+
+void session_state_mark_started_external(void) {
+  // Wake-word path already set the flag/UI. Do nothing in that case.
+  if (s_voice_session_active) {
+    return;
+  }
+
+  s_voice_session_active = true;
+
+  ESP_LOGI(TAG, "Session started by server command");
+  led_control_set_state(LED_STATE_LISTENING);
+  play_beep_async(1000, 150);
 }
 
 /**

@@ -13,8 +13,10 @@
 #include "gpio_control.h"
 #include "led_control.h"
 #include "runtime_config.h"
+#include "session_state_bridge.h"
 #include "wifi_manager.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "afe_pipeline.h"
@@ -48,6 +50,7 @@ static const char *TAG = "VOICE_CLI";
 // Persistent connection maintenance intervals
 #define RECONNECT_INTERVAL_MS 3000
 #define HEARTBEAT_INTERVAL_MS 5000
+#define MAX_TEXT_PAYLOAD_BYTES 16384
 
 // JSON interrupt command
 #define INTERRUPTED_MSG "{\"type\":\"interrupted\"}"
@@ -130,6 +133,8 @@ static volatile int32_t s_last_received_server_id = -1;
 
 // Handle for Task Notification synchronization
 static TaskHandle_t s_mic_task_handle = NULL;
+static char *s_text_payload_buffer = NULL;
+static size_t s_text_payload_capacity = 0;
 
 // ID ring buffer helpers
 static void id_ring_push(id_ring_t *ring, int32_t id) {
@@ -208,6 +213,9 @@ static void network_tx_task(void *arg);
 static void stop_audio_tasks(void);
 static void update_playback_activity(bool buffering);
 static void async_session_cleanup_task(void *arg);
+static void reset_text_payload_buffer(void);
+static bool assemble_text_payload(const esp_websocket_event_data_t *data,
+                                  char **payload_out, size_t *payload_len_out);
 static esp_err_t ensure_ws_client_locked(void);
 static void reset_ws_client_locked(const char *reason);
 static bool is_ws_connected(void);
@@ -247,6 +255,73 @@ static void async_session_cleanup_task(void *arg) {
   vTaskDelete(NULL);
 }
 
+static void reset_text_payload_buffer(void) {
+  if (s_text_payload_buffer) {
+    free(s_text_payload_buffer);
+    s_text_payload_buffer = NULL;
+  }
+  s_text_payload_capacity = 0;
+}
+
+static bool assemble_text_payload(const esp_websocket_event_data_t *data,
+                                  char **payload_out,
+                                  size_t *payload_len_out) {
+  if (!data || !payload_out || !payload_len_out || !data->data_ptr ||
+      data->data_len <= 0) {
+    return false;
+  }
+
+  size_t chunk_len = (size_t)data->data_len;
+  size_t chunk_offset = data->payload_offset > 0 ? (size_t)data->payload_offset : 0;
+  size_t total_len = data->payload_len > 0 ? (size_t)data->payload_len : chunk_len;
+
+  if (total_len > MAX_TEXT_PAYLOAD_BYTES) {
+    ESP_LOGW(TAG, "Dropping oversized text payload (%u bytes)",
+             (unsigned)total_len);
+    reset_text_payload_buffer();
+    return false;
+  }
+
+  if (chunk_offset == 0) {
+    reset_text_payload_buffer();
+    s_text_payload_buffer = malloc(total_len + 1);
+    if (!s_text_payload_buffer) {
+      ESP_LOGE(TAG, "Failed to allocate text payload buffer (%u bytes)",
+               (unsigned)total_len);
+      return false;
+    }
+    s_text_payload_capacity = total_len;
+  }
+
+  if (!s_text_payload_buffer || s_text_payload_capacity != total_len) {
+    ESP_LOGW(TAG, "Text payload assembly state mismatch, dropping frame");
+    reset_text_payload_buffer();
+    return false;
+  }
+
+  if (chunk_offset + chunk_len > s_text_payload_capacity) {
+    ESP_LOGW(TAG,
+             "Text payload chunk overflow: offset=%u chunk=%u capacity=%u",
+             (unsigned)chunk_offset, (unsigned)chunk_len,
+             (unsigned)s_text_payload_capacity);
+    reset_text_payload_buffer();
+    return false;
+  }
+
+  memcpy(s_text_payload_buffer + chunk_offset, data->data_ptr, chunk_len);
+  size_t assembled_len = chunk_offset + chunk_len;
+  if (assembled_len < s_text_payload_capacity) {
+    return false;
+  }
+
+  s_text_payload_buffer[s_text_payload_capacity] = '\0';
+  *payload_out = s_text_payload_buffer;
+  *payload_len_out = s_text_payload_capacity;
+  s_text_payload_buffer = NULL;
+  s_text_payload_capacity = 0;
+  return true;
+}
+
 // ----------------------------------------------------------------------------
 // WebSocket Event Handler
 // ----------------------------------------------------------------------------
@@ -267,6 +342,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
     s_state.ws_connected = false;
     s_state.last_playback_rx_us = 0;
     s_state.playback_active = false;
+    reset_text_payload_buffer();
     stop_local_audio_session(true);
     break;
 
@@ -310,85 +386,83 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
     } else if (data->op_code == 0x01) {
       // Text data
       if (data->data_ptr && data->data_len > 0) {
-        // Create null-terminated buffer for safe strstr usage
-        // Limit size to avoid excessive allocation
-        size_t safe_len = data->data_len < 1024 ? data->data_len : 1023;
-        char *safe_payload = malloc(safe_len + 1);
-        if (safe_payload) {
-          memcpy(safe_payload, data->data_ptr, safe_len);
-          safe_payload[safe_len] = '\0';
+        char *payload = NULL;
+        size_t payload_len = 0;
+        if (!assemble_text_payload(data, &payload, &payload_len)) {
+          break;
+        }
 
-          if (strstr(safe_payload, "\"session_start\"") != NULL) {
-            ESP_LOGI(TAG, "Received command: session_start");
-            if (start_local_audio_session() != ESP_OK) {
-              ESP_LOGE(TAG, "Failed to start local session");
-            }
-          } else if (strstr(safe_payload, "\"session_error\"") != NULL) {
-            ESP_LOGW(TAG, "Received command: session_error");
-            stop_local_audio_session(false);
-            afe_pipeline_notify_session_end();
-          } else if (strstr(safe_payload, "\"session_stop\"") != NULL ||
-                     strstr(safe_payload, "\"session_close\"") != NULL ||
-                     strstr(safe_payload, "\"session_closed\"") != NULL) {
-            ESP_LOGI(TAG, "Received session stop command");
-            stop_local_audio_session(true);
-          } else if (strstr(safe_payload, "\"ping\"") != NULL) {
-            // Reply to server ping
-            const char *pong_msg = "{\"type\":\"pong\"}";
-            if (is_ws_connected()) {
-              esp_websocket_client_send_text(
-                  s_state.ws_client, pong_msg, strlen(pong_msg),
-                  pdMS_TO_TICKS(200));
-            }
-          } else if (strstr(safe_payload, "\"pong\"") != NULL) {
-            ESP_LOGD(TAG, "Received pong");
-          } else if (strstr(safe_payload, "\"interrupted\"") != NULL) {
-            ESP_LOGI(TAG, "Received interrupt command, clearing buffer");
-
-            // Color toggling logic by user request
-            if (s_state.session_active) {
-              led_state_t cur_state = led_control_get_state();
-              if (cur_state == LED_STATE_SPEAKING ||
-                  cur_state == LED_STATE_LISTENING) {
-                // Was green -> set red
-                led_control_set_state(LED_STATE_ERROR);
-              } else if (cur_state == LED_STATE_ERROR) {
-                // Was red -> set green
-                led_control_set_state(LED_STATE_SPEAKING);
-              }
-            }
-
-            if (s_state.playback_buffer) {
-              audio_buffer_clear(s_state.playback_buffer);
-            }
-            id_ring_reset(&s_id_ring);
-            // IMPORTANT: Do NOT reset s_current_played_id and
-            // s_last_received_server_id! Keep last known IDs for AEC to process
-            // the "tail" of echo from audio that was already in the DMA/speaker
-            // pipeline. IMPORTANT: Do NOT reset s_current_played_id and
-            // s_last_received_server_id! Keep last known IDs to process
-            // echo "tail" from audio already in DMA/speaker path.
-            // s_current_played_id = -1;  // REMOVED - keep for AEC tail
-            // processing
-            afe_pipeline_reset();
-            s_state.playback_active = false;
-            s_state.last_playback_rx_us = 0;
-          } else if (strstr(safe_payload, "\"gpio_command\"") != NULL) {
-            // GPIO command from backend
-            gpio_control_handle_command(data->data_ptr, data->data_len);
+        if (strstr(payload, "\"session_start\"") != NULL) {
+          ESP_LOGI(TAG, "Received command: session_start");
+          if (start_local_audio_session() != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to start local session");
           } else {
-            ESP_LOGI(TAG, "Received text message: %.*s", (int)safe_len,
-                     safe_payload);
-            // Text usually arrives before audio or during "thinking"
-            if (s_state.session_active) {
-              led_control_set_state(LED_STATE_THINKING);
+            session_state_mark_started_external();
+          }
+        } else if (strstr(payload, "\"session_error\"") != NULL) {
+          ESP_LOGW(TAG, "Received command: session_error");
+          stop_local_audio_session(false);
+          afe_pipeline_notify_session_end();
+        } else if (strstr(payload, "\"session_stop\"") != NULL ||
+                   strstr(payload, "\"session_close\"") != NULL ||
+                   strstr(payload, "\"session_closed\"") != NULL) {
+          ESP_LOGI(TAG, "Received session stop command");
+          stop_local_audio_session(true);
+        } else if (strstr(payload, "\"ping\"") != NULL) {
+          // Reply to server ping
+          const char *pong_msg = "{\"type\":\"pong\"}";
+          if (is_ws_connected()) {
+            esp_websocket_client_send_text(s_state.ws_client, pong_msg,
+                                           strlen(pong_msg),
+                                           pdMS_TO_TICKS(200));
+          }
+        } else if (strstr(payload, "\"pong\"") != NULL) {
+          ESP_LOGD(TAG, "Received pong");
+        } else if (strstr(payload, "\"interrupted\"") != NULL) {
+          ESP_LOGI(TAG, "Received interrupt command, clearing buffer");
+
+          // Color toggling logic by user request
+          if (s_state.session_active) {
+            led_state_t cur_state = led_control_get_state();
+            if (cur_state == LED_STATE_SPEAKING ||
+                cur_state == LED_STATE_LISTENING) {
+              // Was green -> set red
+              led_control_set_state(LED_STATE_ERROR);
+            } else if (cur_state == LED_STATE_ERROR) {
+              // Was red -> set green
+              led_control_set_state(LED_STATE_SPEAKING);
             }
           }
-          free(safe_payload);
+
+          if (s_state.playback_buffer) {
+            audio_buffer_clear(s_state.playback_buffer);
+          }
+          id_ring_reset(&s_id_ring);
+          // IMPORTANT: Do NOT reset s_current_played_id and
+          // s_last_received_server_id! Keep last known IDs for AEC to process
+          // the "tail" of echo from audio that was already in the DMA/speaker
+          // pipeline. IMPORTANT: Do NOT reset s_current_played_id and
+          // s_last_received_server_id! Keep last known IDs to process
+          // echo "tail" from audio already in DMA/speaker path.
+          // s_current_played_id = -1;  // REMOVED - keep for AEC tail
+          // processing
+          afe_pipeline_reset();
+          s_state.playback_active = false;
+          s_state.last_playback_rx_us = 0;
+        } else if (strstr(payload, "\"gpio_command\"") != NULL) {
+          // GPIO command from backend
+          gpio_control_handle_command(payload, payload_len);
         } else {
-          ESP_LOGE(TAG,
-                   "Failed to allocate memory for websocket payload check");
+          int preview_len = payload_len < 512 ? (int)payload_len : 512;
+          ESP_LOGI(TAG, "Received text message (%u bytes): %.*s%s",
+                   (unsigned)payload_len, preview_len, payload,
+                   payload_len > 512 ? "..." : "");
+          // Text usually arrives before audio or during "thinking"
+          if (s_state.session_active) {
+            led_control_set_state(LED_STATE_THINKING);
+          }
         }
+        free(payload);
       }
     } else if (data->op_code == 0x08) {
       // Close frame
@@ -399,6 +473,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
       }
       ESP_LOGW(TAG, "WebSocket closed by server, code: %d", close_code);
       s_state.ws_connected = false;
+      reset_text_payload_buffer();
       stop_local_audio_session(true);
     }
     break;
@@ -413,6 +488,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
     }
 
     s_state.ws_connected = false;
+    reset_text_payload_buffer();
 
     if (s_state.session_active) {
       ESP_LOGW(TAG, "Ending logical session due to WebSocket error");
@@ -769,6 +845,7 @@ static void reset_ws_client_locked(const char *reason) {
   esp_websocket_client_handle_t ws_client = s_state.ws_client;
   s_state.ws_client = NULL;
   s_state.ws_connected = false;
+  reset_text_payload_buffer();
 
   if (!ws_client) {
     return;
@@ -1059,6 +1136,7 @@ static void heartbeat_task(void *arg) {
 esp_err_t voice_client_init(voice_client_session_end_cb_t on_session_end) {
   ESP_LOGI(TAG, "Initializing voice client (persistent connection)");
 
+  reset_text_payload_buffer();
   memset(&s_state, 0, sizeof(s_state));
   s_state.on_session_end = on_session_end;
   s_state.client_running = true;
@@ -1169,6 +1247,7 @@ audio_buffer_t *voice_client_get_playback_buffer(void) {
 
 esp_err_t voice_client_deinit(void) {
   s_state.client_running = false;
+  reset_text_payload_buffer();
   stop_local_audio_session(false);
 
   // Give background task time to finish
