@@ -17,5 +17,6 @@ wake_mode,data,string,strict
 wake_level,data,u32,6
 audio_settings,namespace,,
 playback_rate,data,u32,16000
+volume_pct,data,u32,100
 buffer_start_ms,data,u32,100
 buffer_max_s,data,u32,4

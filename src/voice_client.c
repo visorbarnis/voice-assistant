@@ -10,6 +10,7 @@
  */
 
 #include "voice_client.h"
+#include "audio_volume_service.h"
 #include "gpio_control.h"
 #include "led_control.h"
 #include "runtime_config.h"
@@ -591,6 +592,8 @@ static void audio_playback_task(void *arg) {
       memset(play_buf, 0, mono_buf_size);
       update_playback_activity(true);
     }
+
+    audio_volume_service_apply_pcm16(play_buf, PLAYBACK_CHUNK_SAMPLES);
 
     for (size_t i = 0; i < PLAYBACK_CHUNK_SAMPLES; i++) {
       int16_t sample = play_buf[i];

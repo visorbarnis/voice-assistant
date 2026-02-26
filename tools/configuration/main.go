@@ -46,6 +46,7 @@ var allFields = []fieldSpec{
 	{Namespace: "server_settings", Key: "wake_level", Label: "Wake Sensitivity (0..10)", Type: "u32", Default: "6"},
 
 	{Namespace: "audio_settings", Key: "playback_rate", Label: "Playback Rate (Hz)", Type: "u32", Default: "16000"},
+	{Namespace: "audio_settings", Key: "volume_pct", Label: "Playback Volume (%)", Type: "u32", Default: "100"},
 	{Namespace: "audio_settings", Key: "buffer_start_ms", Label: "Buffer Start (ms)", Type: "u32", Default: "100"},
 	{Namespace: "audio_settings", Key: "buffer_max_s", Label: "Buffer Max (sec)", Type: "u32", Default: "4"},
 }
@@ -189,6 +190,15 @@ func (s *uiState) buildMainUI() {
 				fieldID("server_settings", "wake_level"),
 			),
 			"Tips:\n- server identity and authorization\n- wake strictness: normal=DET_MODE_90, strict=DET_MODE_95\n- wake sensitivity: 0 strictest, 10 most sensitive\n- values are validated on Apply",
+		)
+	})
+	s.menu.AddItem("Edit Audio", "playback volume (0..100%)", '3', func() {
+		s.openSpecEditor(
+			"Audio",
+			pickFields(
+				fieldID("audio_settings", "volume_pct"),
+			),
+			"Tips:\n- range: 0..100 (%)\n- internally mapped to 0..250% PCM gain",
 		)
 	})
 	s.menu.AddItem("Save", "save to current file", 's', func() {
@@ -801,6 +811,10 @@ func validateValues(values map[string]string) error {
 			case fieldID("audio_settings", "playback_rate"):
 				if n < 8000 || n > 96000 {
 					return errors.New("audio_settings.playback_rate must be in range 8000..96000")
+				}
+			case fieldID("audio_settings", "volume_pct"):
+				if n > 100 {
+					return errors.New("audio_settings.volume_pct must be in range 0..100")
 				}
 			case fieldID("audio_settings", "buffer_start_ms"):
 				if n > 120000 {

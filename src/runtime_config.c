@@ -37,11 +37,13 @@ static const char *TAG = "RUNTIME_CFG";
 #define KEY_SERVER_WAKE_LEVEL "wake_level"
 
 #define KEY_AUDIO_PLAYBACK_RATE "playback_rate"
+#define KEY_AUDIO_VOLUME_PERCENT "volume_pct"
 #define KEY_AUDIO_START_MS "buffer_start_ms"
 #define KEY_AUDIO_MAX_SECONDS "buffer_max_s"
 
 #define DEFAULT_WAKE_DETECTION_MODE "strict"
 #define DEFAULT_WAKE_SENSITIVITY_LEVEL 6U
+#define DEFAULT_AUDIO_PLAYBACK_VOLUME_PERCENT 100U
 
 static runtime_config_t s_config = {0};
 static bool s_defaults_loaded = false;
@@ -72,6 +74,7 @@ static void load_defaults(void) {
   s_config.wake_sensitivity_level = DEFAULT_WAKE_SENSITIVITY_LEVEL;
 
   s_config.audio_playback_sample_rate = CONFIG_AUDIO_PLAYBACK_SAMPLE_RATE;
+  s_config.audio_playback_volume_percent = DEFAULT_AUDIO_PLAYBACK_VOLUME_PERCENT;
   s_config.audio_buffer_start_threshold_ms =
       CONFIG_AUDIO_BUFFER_START_THRESHOLD_MS;
   s_config.audio_buffer_max_seconds = CONFIG_AUDIO_BUFFER_MAX_SECONDS;
@@ -111,6 +114,11 @@ static void sanitize_loaded_config(void) {
 
   if (s_config.audio_playback_sample_rate == 0) {
     s_config.audio_playback_sample_rate = CONFIG_AUDIO_PLAYBACK_SAMPLE_RATE;
+  }
+
+  if (s_config.audio_playback_volume_percent > 100) {
+    s_config.audio_playback_volume_percent =
+        DEFAULT_AUDIO_PLAYBACK_VOLUME_PERCENT;
   }
 
   if (s_config.audio_buffer_start_threshold_ms == 0 ||
@@ -274,6 +282,8 @@ static esp_err_t load_audio_overrides(void) {
 
   nvs_get_u32_if_present(handle, KEY_AUDIO_PLAYBACK_RATE,
                          &s_config.audio_playback_sample_rate, NS_AUDIO);
+  nvs_get_u32_if_present(handle, KEY_AUDIO_VOLUME_PERCENT,
+                         &s_config.audio_playback_volume_percent, NS_AUDIO);
   nvs_get_u32_if_present(handle, KEY_AUDIO_START_MS,
                          &s_config.audio_buffer_start_threshold_ms, NS_AUDIO);
   nvs_get_u32_if_present(handle, KEY_AUDIO_MAX_SECONDS,
@@ -331,7 +341,9 @@ void runtime_config_log_summary(void) {
            (unsigned)strlen(cfg->voice_api_key));
   ESP_LOGI(TAG,
            "Active config: playback_rate=%" PRIu32
-           ", buffer_start_ms=%" PRIu32 ", buffer_max_s=%" PRIu32,
-           cfg->audio_playback_sample_rate, cfg->audio_buffer_start_threshold_ms,
+           ", volume_pct=%" PRIu32 ", buffer_start_ms=%" PRIu32
+           ", buffer_max_s=%" PRIu32,
+           cfg->audio_playback_sample_rate, cfg->audio_playback_volume_percent,
+           cfg->audio_buffer_start_threshold_ms,
            cfg->audio_buffer_max_seconds);
 }

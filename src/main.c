@@ -40,6 +40,7 @@
 #include "esp_wn_models.h"
 
 #include "afe_pipeline.h"
+#include "audio_volume_service.h"
 #include "led_control.h"
 #include "ntp_sync.h"
 #include "runtime_config.h"
@@ -357,6 +358,8 @@ static void play_beep(int freq_hz, int duration_ms) {
     tone_buffer[i * 2 + 1] = sample16;
   }
 
+  audio_volume_service_apply_pcm16(tone_buffer, (size_t)sample_count * 2);
+
   // Play tone
   size_t bytes_written = 0;
   i2s_channel_write(s_i2s_tx_chan, tone_buffer,
@@ -525,6 +528,13 @@ void app_main(void) {
   runtime_cfg = runtime_config_get();
   ESP_LOGI(TAG, "Server: wss://%s:%u%s", runtime_cfg->server_host,
            (unsigned)runtime_cfg->server_port, runtime_cfg->voice_ws_path);
+
+  esp_err_t vol_err =
+      audio_volume_service_init(runtime_cfg->audio_playback_volume_percent);
+  if (vol_err != ESP_OK) {
+    ESP_LOGW(TAG, "audio_volume_service_init failed: %s",
+             esp_err_to_name(vol_err));
+  }
 
   // Initialize LED (WS2812 RMT, low priority)
   ESP_ERROR_CHECK(led_control_init(STATUS_LED_GPIO));

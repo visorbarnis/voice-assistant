@@ -4,10 +4,11 @@ Cross-platform terminal utility with menu-based ncurses-like interface for editi
 
 ## Features
 - Full-screen terminal UI (`tview`/`tcell`)
-- Menu navigation and section editors (`WiFi`, `Server`)
+- Menu navigation and section editors (`WiFi`, `Server`, `Audio`)
 - Wake-word model selector in `Server` editor with automatic `esp-sr` discovery/download
 - Wake strictness selector in `Server` editor (`normal`/`strict` -> `DET_MODE_90/95`)
 - Wake sensitivity level in `Server` editor (`0..10`, where 10 is most sensitive)
+- Playback volume in `Audio` editor (`0..100%`)
 - Built-in validation and canonical ESP NVS CSV output
 - Portable binaries built with `CGO_ENABLED=0` (no platform GUI libs required)
 

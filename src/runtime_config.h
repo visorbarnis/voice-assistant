@@ -47,6 +47,7 @@ typedef struct {
   uint32_t wake_sensitivity_level; // 0..10, where 10 is most sensitive
 
   uint32_t audio_playback_sample_rate;
+  uint32_t audio_playback_volume_percent;
   uint32_t audio_buffer_start_threshold_ms;
   uint32_t audio_buffer_max_seconds;
 } runtime_config_t;

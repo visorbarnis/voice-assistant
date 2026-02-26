@@ -100,6 +100,7 @@ In the menu that opens, you can:
 - Specify the **voice-assistant** address.
 - Select and configure the **Wake Word** model (the phrase the assistant responds to).
 - Enter authorization tokens.
+- Tune audio parameters, including **Playback Volume (0-100%)**.
 
 
 <img src="doc/images/configuration-settings.png" width="600">
@@ -113,6 +114,7 @@ In the menu that opens, you can:
 - **Wake-Word Model** — select the model for the wake word (Alexa, Jarvis). (required)
 - **Wake Strictness** — recognition strictness (affects false positives).
 - **Wake Sensitivity (0–10)** — microphone sensitivity (affects false positives).
+- **Playback Volume (0–100)** — output gain applied to PCM before I2S playback (mapped internally to 0–250%).
 
 <img src="doc/images/configuration2.png" width="600">
 
