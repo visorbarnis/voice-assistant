@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "afe_pipeline.h"
+#include "cJSON.h"
 #include "driver/i2s_std.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -52,6 +53,11 @@ static const char *TAG = "VOICE_CLI";
 #define RECONNECT_INTERVAL_MS 3000
 #define HEARTBEAT_INTERVAL_MS 5000
 #define MAX_TEXT_PAYLOAD_BYTES 16384
+#define CONTROL_MSG_QUEUE_LEN 8
+#define CONTROL_MSG_TASK_STACK 4096
+#define CONTROL_MSG_TASK_PRIO 3
+#define VOLUME_PERSIST_TASK_STACK 3072
+#define VOLUME_PERSIST_TASK_PRIO 2
 
 // JSON interrupt command
 #define INTERRUPTED_MSG "{\"type\":\"interrupted\"}"
@@ -116,6 +122,11 @@ typedef struct {
   size_t len;
 } tx_item_t;
 
+typedef struct {
+  char *payload;
+  size_t payload_len;
+} control_msg_t;
+
 // ID ring buffer for DMA delay compensation
 typedef struct {
   int32_t ids[ID_RING_SIZE];
@@ -136,6 +147,10 @@ static volatile int32_t s_last_received_server_id = -1;
 static TaskHandle_t s_mic_task_handle = NULL;
 static char *s_text_payload_buffer = NULL;
 static size_t s_text_payload_capacity = 0;
+static QueueHandle_t s_control_msg_queue = NULL;
+static TaskHandle_t s_control_msg_task = NULL;
+static QueueHandle_t s_volume_persist_queue = NULL;
+static TaskHandle_t s_volume_persist_task = NULL;
 
 // ID ring buffer helpers
 static void id_ring_push(id_ring_t *ring, int32_t id) {
@@ -214,6 +229,11 @@ static void network_tx_task(void *arg);
 static void stop_audio_tasks(void);
 static void update_playback_activity(bool buffering);
 static void async_session_cleanup_task(void *arg);
+static void control_message_task(void *arg);
+static bool enqueue_control_message(char *payload, size_t payload_len);
+static void volume_persist_task(void *arg);
+static void schedule_volume_persist(uint32_t volume_percent);
+static bool handle_set_volume_command(const char *payload, size_t payload_len);
 static void reset_text_payload_buffer(void);
 static bool assemble_text_payload(const esp_websocket_event_data_t *data,
                                   char **payload_out, size_t *payload_len_out);
@@ -323,6 +343,154 @@ static bool assemble_text_payload(const esp_websocket_event_data_t *data,
   return true;
 }
 
+static void volume_persist_task(void *arg) {
+  uint32_t volume_percent = 0;
+
+  while (s_state.client_running ||
+         (s_volume_persist_queue &&
+          uxQueueMessagesWaiting(s_volume_persist_queue) > 0)) {
+    if (!s_volume_persist_queue) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+
+    if (xQueueReceive(s_volume_persist_queue, &volume_percent,
+                      pdMS_TO_TICKS(200)) != pdTRUE) {
+      continue;
+    }
+
+    // Keep only the latest requested value.
+    uint32_t latest = volume_percent;
+    while (xQueueReceive(s_volume_persist_queue, &volume_percent, 0) == pdTRUE) {
+      latest = volume_percent;
+    }
+
+    esp_err_t err = runtime_config_set_audio_playback_volume_percent(latest);
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "Failed to persist volume %lu%%: %s",
+               (unsigned long)latest, esp_err_to_name(err));
+    } else {
+      ESP_LOGI(TAG, "Persisted volume: %lu%%", (unsigned long)latest);
+    }
+  }
+
+  s_volume_persist_task = NULL;
+  vTaskDelete(NULL);
+}
+
+static void schedule_volume_persist(uint32_t volume_percent) {
+  if (!s_volume_persist_queue) {
+    return;
+  }
+
+  xQueueOverwrite(s_volume_persist_queue, &volume_percent);
+}
+
+static bool enqueue_control_message(char *payload, size_t payload_len) {
+  if (!payload || payload_len == 0 || !s_control_msg_queue) {
+    return false;
+  }
+
+  control_msg_t msg = {
+      .payload = payload,
+      .payload_len = payload_len,
+  };
+
+  if (xQueueSend(s_control_msg_queue, &msg, 0) != pdTRUE) {
+    return false;
+  }
+
+  return true;
+}
+
+static bool handle_set_volume_command(const char *payload, size_t payload_len) {
+  if (!payload || payload_len == 0) {
+    return false;
+  }
+
+  if (strstr(payload, "set_volume") == NULL) {
+    return false;
+  }
+
+  cJSON *root = cJSON_ParseWithLength(payload, payload_len);
+  if (!root) {
+    return false;
+  }
+
+  bool handled = false;
+  cJSON *type = cJSON_GetObjectItem(root, "type");
+  if (!cJSON_IsString(type) || strcmp(type->valuestring, "set_volume") != 0) {
+    goto cleanup;
+  }
+  handled = true;
+
+  cJSON *volume_item = cJSON_GetObjectItem(root, "value");
+  if (!cJSON_IsNumber(volume_item)) {
+    volume_item = cJSON_GetObjectItem(root, "volume");
+  }
+  if (!cJSON_IsNumber(volume_item)) {
+    volume_item = cJSON_GetObjectItem(root, "volume_pct");
+  }
+
+  if (!cJSON_IsNumber(volume_item)) {
+    ESP_LOGW(TAG,
+             "set_volume ignored: missing numeric value (expected 0..100)");
+    goto cleanup;
+  }
+
+  int volume = volume_item->valueint;
+  if (volume < 0 || volume > 100) {
+    ESP_LOGW(TAG, "set_volume ignored: value=%d out of range (0..100)", volume);
+    goto cleanup;
+  }
+
+  esp_err_t apply_err = audio_volume_service_set((uint32_t)volume);
+  if (apply_err != ESP_OK) {
+    ESP_LOGW(TAG, "set_volume failed to apply: %s", esp_err_to_name(apply_err));
+    goto cleanup;
+  }
+
+  schedule_volume_persist((uint32_t)volume);
+  ESP_LOGI(TAG, "set_volume applied: %d%% (persist scheduled)", volume);
+
+cleanup:
+  cJSON_Delete(root);
+  return handled;
+}
+
+static void control_message_task(void *arg) {
+  control_msg_t msg = {0};
+
+  while (s_state.client_running ||
+         (s_control_msg_queue && uxQueueMessagesWaiting(s_control_msg_queue) > 0)) {
+    if (!s_control_msg_queue) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+
+    if (xQueueReceive(s_control_msg_queue, &msg, pdMS_TO_TICKS(200)) != pdTRUE) {
+      continue;
+    }
+
+    if (!msg.payload || msg.payload_len == 0) {
+      continue;
+    }
+
+    if (handle_set_volume_command(msg.payload, msg.payload_len)) {
+      // set_volume is handled independently from session state
+    } else if (strstr(msg.payload, "\"gpio_command\"") != NULL) {
+      gpio_control_handle_command(msg.payload, msg.payload_len);
+    }
+
+    free(msg.payload);
+    msg.payload = NULL;
+    msg.payload_len = 0;
+  }
+
+  s_control_msg_task = NULL;
+  vTaskDelete(NULL);
+}
+
 // ----------------------------------------------------------------------------
 // WebSocket Event Handler
 // ----------------------------------------------------------------------------
@@ -393,7 +561,15 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
           break;
         }
 
-        if (strstr(payload, "\"session_start\"") != NULL) {
+        if (strstr(payload, "\"set_volume\"") != NULL ||
+            strstr(payload, "\"gpio_command\"") != NULL) {
+          if (enqueue_control_message(payload, payload_len)) {
+            // Ownership transferred to control_message_task.
+            payload = NULL;
+          } else {
+            ESP_LOGW(TAG, "Control queue is full, dropping control message");
+          }
+        } else if (strstr(payload, "\"session_start\"") != NULL) {
           ESP_LOGI(TAG, "Received command: session_start");
           if (start_local_audio_session() != ESP_OK) {
             ESP_LOGE(TAG, "Failed to start local session");
@@ -450,9 +626,6 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
           afe_pipeline_reset();
           s_state.playback_active = false;
           s_state.last_playback_rx_us = 0;
-        } else if (strstr(payload, "\"gpio_command\"") != NULL) {
-          // GPIO command from backend
-          gpio_control_handle_command(payload, payload_len);
         } else {
           int preview_len = payload_len < 512 ? (int)payload_len : 512;
           ESP_LOGI(TAG, "Received text message (%u bytes): %.*s%s",
@@ -463,7 +636,9 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
             led_control_set_state(LED_STATE_THINKING);
           }
         }
-        free(payload);
+        if (payload) {
+          free(payload);
+        }
       }
     } else if (data->op_code == 0x08) {
       // Close frame
@@ -1157,6 +1332,62 @@ esp_err_t voice_client_init(voice_client_session_end_cb_t on_session_end) {
     return ESP_ERR_NO_MEM;
   }
 
+  s_control_msg_queue = xQueueCreate(CONTROL_MSG_QUEUE_LEN, sizeof(control_msg_t));
+  if (!s_control_msg_queue) {
+    ESP_LOGE(TAG, "Failed to create control message queue");
+    vSemaphoreDelete(s_state.state_mutex);
+    s_state.state_mutex = NULL;
+    return ESP_ERR_NO_MEM;
+  }
+
+  BaseType_t control_ret = xTaskCreatePinnedToCore(
+      control_message_task, "ctrl_msg", CONTROL_MSG_TASK_STACK, NULL,
+      CONTROL_MSG_TASK_PRIO, &s_control_msg_task, 0);
+  if (control_ret != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create control message task");
+    vQueueDelete(s_control_msg_queue);
+    s_control_msg_queue = NULL;
+    vSemaphoreDelete(s_state.state_mutex);
+    s_state.state_mutex = NULL;
+    return ESP_FAIL;
+  }
+
+  s_volume_persist_queue = xQueueCreate(1, sizeof(uint32_t));
+  if (!s_volume_persist_queue) {
+    ESP_LOGE(TAG, "Failed to create volume persist queue");
+    if (s_control_msg_task) {
+      vTaskDelete(s_control_msg_task);
+      s_control_msg_task = NULL;
+    }
+    if (s_control_msg_queue) {
+      vQueueDelete(s_control_msg_queue);
+      s_control_msg_queue = NULL;
+    }
+    vSemaphoreDelete(s_state.state_mutex);
+    s_state.state_mutex = NULL;
+    return ESP_ERR_NO_MEM;
+  }
+
+  BaseType_t persist_ret = xTaskCreatePinnedToCore(
+      volume_persist_task, "vol_persist", VOLUME_PERSIST_TASK_STACK, NULL,
+      VOLUME_PERSIST_TASK_PRIO, &s_volume_persist_task, 0);
+  if (persist_ret != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create volume persist task");
+    vQueueDelete(s_volume_persist_queue);
+    s_volume_persist_queue = NULL;
+    if (s_control_msg_task) {
+      vTaskDelete(s_control_msg_task);
+      s_control_msg_task = NULL;
+    }
+    if (s_control_msg_queue) {
+      vQueueDelete(s_control_msg_queue);
+      s_control_msg_queue = NULL;
+    }
+    vSemaphoreDelete(s_state.state_mutex);
+    s_state.state_mutex = NULL;
+    return ESP_FAIL;
+  }
+
   resolve_speak_mode_config();
 
   BaseType_t ret = xTaskCreatePinnedToCore(connection_maintainer_task,
@@ -1164,6 +1395,22 @@ esp_err_t voice_client_init(voice_client_session_end_cb_t on_session_end) {
                                            &s_state.connection_task, 0);
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create connection maintainer");
+    if (s_volume_persist_task) {
+      vTaskDelete(s_volume_persist_task);
+      s_volume_persist_task = NULL;
+    }
+    if (s_volume_persist_queue) {
+      vQueueDelete(s_volume_persist_queue);
+      s_volume_persist_queue = NULL;
+    }
+    if (s_control_msg_task) {
+      vTaskDelete(s_control_msg_task);
+      s_control_msg_task = NULL;
+    }
+    if (s_control_msg_queue) {
+      vQueueDelete(s_control_msg_queue);
+      s_control_msg_queue = NULL;
+    }
     vSemaphoreDelete(s_state.state_mutex);
     s_state.state_mutex = NULL;
     return ESP_FAIL;
@@ -1174,6 +1421,22 @@ esp_err_t voice_client_init(voice_client_session_end_cb_t on_session_end) {
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create heartbeat task");
     s_state.client_running = false;
+    if (s_volume_persist_task) {
+      vTaskDelete(s_volume_persist_task);
+      s_volume_persist_task = NULL;
+    }
+    if (s_volume_persist_queue) {
+      vQueueDelete(s_volume_persist_queue);
+      s_volume_persist_queue = NULL;
+    }
+    if (s_control_msg_task) {
+      vTaskDelete(s_control_msg_task);
+      s_control_msg_task = NULL;
+    }
+    if (s_control_msg_queue) {
+      vQueueDelete(s_control_msg_queue);
+      s_control_msg_queue = NULL;
+    }
     return ESP_FAIL;
   }
 
@@ -1254,9 +1517,32 @@ esp_err_t voice_client_deinit(void) {
   stop_local_audio_session(false);
 
   // Give background task time to finish
-  for (int i = 0; i < 20 && (s_state.connection_task || s_state.heartbeat_task);
+  for (int i = 0;
+       i < 20 &&
+       (s_state.connection_task || s_state.heartbeat_task || s_control_msg_task ||
+        s_volume_persist_task);
        i++) {
     vTaskDelay(pdMS_TO_TICKS(50));
+  }
+
+  if (s_control_msg_queue && !s_control_msg_task) {
+    control_msg_t msg = {0};
+    while (xQueueReceive(s_control_msg_queue, &msg, 0) == pdTRUE) {
+      if (msg.payload) {
+        free(msg.payload);
+      }
+    }
+    vQueueDelete(s_control_msg_queue);
+    s_control_msg_queue = NULL;
+  } else if (s_control_msg_task) {
+    ESP_LOGW(TAG, "Control message task still running during deinit");
+  }
+
+  if (s_volume_persist_queue && !s_volume_persist_task) {
+    vQueueDelete(s_volume_persist_queue);
+    s_volume_persist_queue = NULL;
+  } else if (s_volume_persist_task) {
+    ESP_LOGW(TAG, "Volume persist task still running during deinit");
   }
 
   xSemaphoreTake(s_state.state_mutex, portMAX_DELAY);

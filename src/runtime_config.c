@@ -323,6 +323,44 @@ const runtime_config_t *runtime_config_get(void) {
   return &s_config;
 }
 
+esp_err_t runtime_config_set_audio_playback_volume_percent(
+    uint32_t volume_percent) {
+  ensure_defaults_loaded();
+
+  if (volume_percent > 100) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  s_config.audio_playback_volume_percent = volume_percent;
+
+  nvs_handle_t handle = 0;
+  esp_err_t err = nvs_open(NS_AUDIO, NVS_READWRITE, &handle);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Cannot open NVS namespace '%s' for write: %s", NS_AUDIO,
+             esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_u32(handle, KEY_AUDIO_VOLUME_PERCENT, volume_percent);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to write NVS key '%s/%s': %s", NS_AUDIO,
+             KEY_AUDIO_VOLUME_PERCENT, esp_err_to_name(err));
+    nvs_close(handle);
+    return err;
+  }
+
+  err = nvs_commit(handle);
+  nvs_close(handle);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to commit NVS namespace '%s': %s", NS_AUDIO,
+             esp_err_to_name(err));
+    return err;
+  }
+
+  ESP_LOGI(TAG, "Saved playback volume to NVS: %" PRIu32 "%%", volume_percent);
+  return ESP_OK;
+}
+
 void runtime_config_log_summary(void) {
   const runtime_config_t *cfg = runtime_config_get();
 

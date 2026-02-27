@@ -75,6 +75,15 @@ const runtime_config_t *runtime_config_get(void);
  */
 void runtime_config_log_summary(void);
 
+/**
+ * @brief Set playback volume and persist it in NVS
+ *
+ * @param volume_percent Playback volume in range 0..100
+ * @return ESP_OK on success
+ */
+esp_err_t runtime_config_set_audio_playback_volume_percent(
+    uint32_t volume_percent);
+
 #ifdef __cplusplus
 }
 #endif
