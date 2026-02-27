@@ -55,7 +55,7 @@ static const char *TAG = "VOICE_CLI";
 #define MAX_TEXT_PAYLOAD_BYTES 16384
 #define CONTROL_MSG_QUEUE_LEN 8
 #define CONTROL_MSG_TASK_STACK 4096
-#define CONTROL_MSG_TASK_PRIO 3
+#define CONTROL_MSG_TASK_PRIO 2
 #define VOLUME_PERSIST_TASK_STACK 3072
 #define VOLUME_PERSIST_TASK_PRIO 2
 
@@ -231,6 +231,8 @@ static void update_playback_activity(bool buffering);
 static void async_session_cleanup_task(void *arg);
 static void control_message_task(void *arg);
 static bool enqueue_control_message(char *payload, size_t payload_len);
+static bool is_set_volume_type_message(const char *payload);
+static bool is_gpio_command_type_message(const char *payload);
 static void volume_persist_task(void *arg);
 static void schedule_volume_persist(uint32_t volume_percent);
 static bool handle_set_volume_command(const char *payload, size_t payload_len);
@@ -403,6 +405,24 @@ static bool enqueue_control_message(char *payload, size_t payload_len) {
   return true;
 }
 
+static bool is_set_volume_type_message(const char *payload) {
+  if (!payload) {
+    return false;
+  }
+
+  return strstr(payload, "\"type\":\"set_volume\"") != NULL ||
+         strstr(payload, "\"type\": \"set_volume\"") != NULL;
+}
+
+static bool is_gpio_command_type_message(const char *payload) {
+  if (!payload) {
+    return false;
+  }
+
+  return strstr(payload, "\"type\":\"gpio_command\"") != NULL ||
+         strstr(payload, "\"type\": \"gpio_command\"") != NULL;
+}
+
 static bool handle_set_volume_command(const char *payload, size_t payload_len) {
   if (!payload || payload_len == 0) {
     return false;
@@ -476,9 +496,10 @@ static void control_message_task(void *arg) {
       continue;
     }
 
-    if (handle_set_volume_command(msg.payload, msg.payload_len)) {
+    if (is_set_volume_type_message(msg.payload) &&
+        handle_set_volume_command(msg.payload, msg.payload_len)) {
       // set_volume is handled independently from session state
-    } else if (strstr(msg.payload, "\"gpio_command\"") != NULL) {
+    } else if (is_gpio_command_type_message(msg.payload)) {
       gpio_control_handle_command(msg.payload, msg.payload_len);
     }
 
@@ -561,8 +582,12 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
           break;
         }
 
-        if (strstr(payload, "\"set_volume\"") != NULL ||
-            strstr(payload, "\"gpio_command\"") != NULL) {
+        bool is_set_volume = is_set_volume_type_message(payload);
+        bool is_gpio_cmd = is_gpio_command_type_message(payload);
+
+        // No active session: route control JSON to low-priority worker to keep
+        // callback fast for wake-word mode.
+        if (!s_state.session_active && (is_set_volume || is_gpio_cmd)) {
           if (enqueue_control_message(payload, payload_len)) {
             // Ownership transferred to control_message_task.
             payload = NULL;
@@ -626,6 +651,12 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
           afe_pipeline_reset();
           s_state.playback_active = false;
           s_state.last_playback_rx_us = 0;
+        } else if (is_set_volume) {
+          // Active session: keep previous direct behavior for stream path.
+          handle_set_volume_command(payload, payload_len);
+        } else if (is_gpio_cmd) {
+          // Active session: keep previous direct behavior for stream path.
+          gpio_control_handle_command(payload, payload_len);
         } else {
           int preview_len = payload_len < 512 ? (int)payload_len : 512;
           ESP_LOGI(TAG, "Received text message (%u bytes): %.*s%s",
