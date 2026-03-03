@@ -156,8 +156,10 @@ static void afe_set_processing_mode(bool session_active) {
       s_afe.iface->disable_aec(s_afe.data);
     }
 #endif
-    if (s_afe.iface->disable_ns) {
-      s_afe.iface->disable_ns(s_afe.data);
+    // Keep NS enabled in idle mode to reduce false wake-word triggers on
+    // background microphone noise.
+    if (s_afe.iface->enable_ns) {
+      s_afe.iface->enable_ns(s_afe.data);
     }
     if (s_afe.iface->enable_vad) {
       s_afe.iface->enable_vad(s_afe.data);
@@ -167,9 +169,9 @@ static void afe_set_processing_mode(bool session_active) {
     }
     s_afe.processing_session = false;
 #if CONFIG_AEC_ENABLED
-    ESP_LOGI(TAG, "AFE idle mode: AEC/NS disabled, WakeNet enabled");
+    ESP_LOGI(TAG, "AFE idle mode: AEC disabled, NS/VAD/WakeNet enabled");
 #else
-    ESP_LOGI(TAG, "AFE idle mode: NS disabled, WakeNet enabled (AEC disabled)");
+    ESP_LOGI(TAG, "AFE idle mode: NS/VAD/WakeNet enabled (AEC disabled)");
 #endif
   }
 }
