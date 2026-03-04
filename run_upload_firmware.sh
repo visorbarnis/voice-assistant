@@ -462,6 +462,72 @@ ensure_nvs_generator() {
   "$PIO_PYTHON" -m pip install --disable-pip-version-check --upgrade esp-idf-nvs-partition-gen
 }
 
+resolve_monitor_baud() {
+  if [[ -n "${MONITOR_BAUD:-}" ]]; then
+    echo "$MONITOR_BAUD"
+    return 0
+  fi
+
+  local conf_file="$ROOT_DIR/platformio.ini"
+  if [[ ! -f "$conf_file" ]]; then
+    if [[ "${UPLOAD_BAUD:-}" =~ ^[0-9]+$ ]]; then
+      echo "$UPLOAD_BAUD"
+    else
+      echo "115200"
+    fi
+    return 0
+  fi
+
+  local detected=""
+  detected="$("$PIO_PYTHON" - "$conf_file" "$ENV_NAME" <<'PY'
+import configparser
+import sys
+from pathlib import Path
+
+if len(sys.argv) < 3:
+    print("")
+    raise SystemExit(0)
+
+conf = Path(sys.argv[1])
+env_name = sys.argv[2]
+section = f"env:{env_name}"
+
+parser = configparser.ConfigParser(inline_comment_prefixes=(";", "#"))
+parser.optionxform = str
+
+try:
+    with conf.open("r", encoding="utf-8") as handle:
+        parser.read_file(handle)
+except Exception:
+    print("")
+    raise SystemExit(0)
+
+for key in ("monitor_speed", "upload_speed"):
+    value = ""
+    try:
+        value = parser.get(section, key, fallback="").strip()
+    except Exception:
+        value = ""
+    if value.isdigit():
+        print(value)
+        raise SystemExit(0)
+
+print("")
+PY
+)"
+
+  if [[ "$detected" =~ ^[0-9]+$ ]]; then
+    echo "$detected"
+    return 0
+  fi
+
+  if [[ "${UPLOAD_BAUD:-}" =~ ^[0-9]+$ ]]; then
+    echo "$UPLOAD_BAUD"
+  else
+    echo "115200"
+  fi
+}
+
 detect_wake_word_model() {
   local config_file model
   for config_file in "$ROOT_DIR/sdkconfig.$ENV_NAME" "$ROOT_DIR/sdkconfig.defaults"; do
@@ -835,8 +901,15 @@ upload_cached_firmware() {
 
 start_serial_monitor() {
   local monitor_port="$1"
-  echo "Starting serial monitor on: $monitor_port"
-  "$PIO_BIN" run -e "$ENV_NAME" -t monitor --upload-port "$monitor_port" --monitor-port "$monitor_port"
+  local monitor_baud monitor_project_dir
+  monitor_baud="$(resolve_monitor_baud)"
+  monitor_project_dir="$LOCAL_DIR/pio-monitor"
+  mkdir -p "$monitor_project_dir"
+  echo "Starting serial monitor on: $monitor_port (baud: $monitor_baud)"
+  "$PIO_BIN" device monitor \
+    -d "$monitor_project_dir" \
+    --port "$monitor_port" \
+    --baud "$monitor_baud"
 }
 
 ensure_local_platformio
