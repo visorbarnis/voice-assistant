@@ -86,3 +86,5 @@ CONFIG_AEC_ENABLED=n
 # API key and client mode are now provided via settings.csv (NVS).
 
 # CONFIG_SR_WN_WN9_JARVIS_TTS is not set
+
+# CONFIG_SR_WN_WN9S_ALEXA is not set

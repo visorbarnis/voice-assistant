@@ -138,6 +138,18 @@ The `run_upload` script does everything at once: compiles the project, uploads t
 
 > _The script will automatically detect the connected ESP32 port._
 
+### 2.1 Upload Prebuilt Firmware (without rebuild)
+
+Use `run_upload_firmware.sh` if you want to reuse the latest compiled binaries from the `firmware/` directory.
+
+```bash
+./run_upload_firmware.sh
+```
+
+Script behavior:
+- If `firmware/` is missing or incomplete, it builds from sources, uploads, and refreshes `firmware/` cache.
+- If `firmware/` already contains required files, it rebuilds only `settings.bin` from current `settings.csv`, then uploads cached firmware + model + fresh settings without full recompilation.
+
 ---
 
 ## System Architecture

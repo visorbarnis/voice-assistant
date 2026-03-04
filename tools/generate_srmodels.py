@@ -8,6 +8,7 @@ IMPORTANT: The script does not stop the build if the component is not downloaded
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -40,6 +41,66 @@ for path in possible_component_dirs:
     if path.exists():
         component_dir = path.resolve()
         break
+
+
+def parse_wake_model(lines: list[str]) -> str:
+    pattern = re.compile(r'^CONFIG_WAKE_WORD_MODEL="([^"]+)"$')
+    for line in lines:
+        match = pattern.match(line.strip())
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def model_to_symbol(model_name: str) -> str:
+    normalized = re.sub(r"[^A-Z0-9]+", "_", model_name.upper()).strip("_")
+    return f"CONFIG_SR_WN_{normalized}"
+
+
+def ensure_wake_model_symbol(staged_sdkconfig: Path, component_root: Path) -> None:
+    raw = staged_sdkconfig.read_text(encoding="utf-8")
+    lines = raw.replace("\r\n", "\n").split("\n")
+    wake_model = parse_wake_model(lines)
+    if not wake_model:
+        return
+
+    wake_model_dir = component_root / "model" / "wakenet_model" / wake_model
+    if not wake_model_dir.is_dir():
+        raise ValueError(
+            f"wake-word model '{wake_model}' was not found in "
+            f"{component_root / 'model' / 'wakenet_model'}"
+        )
+
+    selected_symbol = model_to_symbol(wake_model)
+    changed = False
+    found_enabled = False
+
+    for idx, line in enumerate(lines):
+        trimmed = line.strip()
+        if not trimmed:
+            continue
+        if trimmed.startswith("# " + selected_symbol + " is not set"):
+            lines[idx] = selected_symbol + "=y"
+            changed = True
+            found_enabled = True
+            continue
+        if trimmed.startswith(selected_symbol + "="):
+            if trimmed != selected_symbol + "=y":
+                lines[idx] = selected_symbol + "=y"
+                changed = True
+            found_enabled = True
+            continue
+
+    if not found_enabled:
+        lines.append(selected_symbol + "=y")
+        changed = True
+
+    if changed:
+        output = "\n".join(lines)
+        if not output.endswith("\n"):
+            output += "\n"
+        staged_sdkconfig.write_text(output, encoding="utf-8")
+        print(f"--- [ESP-SR] Auto-enabled {selected_symbol} for model '{wake_model}' ---")
 
 if not component_dir:
     print("--- [ESP-SR] Skip: esp-sr component not found")
@@ -75,6 +136,11 @@ else:
             sdkconfig_project_dir.mkdir(parents=True, exist_ok=True)
             staged_sdkconfig = sdkconfig_project_dir / "sdkconfig"
             shutil.copy2(sdkconfig_source, staged_sdkconfig)
+            try:
+                ensure_wake_model_symbol(staged_sdkconfig, component_dir)
+            except ValueError as exc:
+                print(f"--- [ESP-SR] Error: {exc}")
+                raise SystemExit(1)
 
             python_exe = env.subst("$PYTHONEXE")
             if not python_exe or "${" in python_exe:
