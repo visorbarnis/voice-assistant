@@ -223,20 +223,68 @@ export PLATFORMIO_CORE_DIR="$ROOT_DIR/.pio_core"
 
 resolve_upload_port() {
   local port=""
+  local cached_port=""
+  local device_json=""
 
   if [[ -n "${UPLOAD_PORT:-}" ]]; then
     port="$UPLOAD_PORT"
-  elif [[ -f "$UPLOAD_PORT_FILE" ]]; then
-    port="$(head -n1 "$UPLOAD_PORT_FILE" | tr -d '\r' | xargs)"
   fi
 
+  if [[ -f "$UPLOAD_PORT_FILE" ]]; then
+    cached_port="$(head -n1 "$UPLOAD_PORT_FILE" | tr -d '\r' | xargs)"
+  fi
+
+  device_json="$("$PIO_BIN" device list --json-output 2>/dev/null || true)"
+
   if [[ -n "$port" ]]; then
+    if [[ "$port" == /dev/* ]] && [[ ! -e "$port" ]]; then
+      echo "Warning: UPLOAD_PORT points to missing device: $port" >&2
+    fi
     echo "$port"
     return 0
   fi
 
-  local device_json
-  device_json="$("$PIO_BIN" device list --json-output 2>/dev/null || true)"
+  if [[ -n "$cached_port" ]]; then
+    if [[ "$cached_port" == /dev/* ]] && [[ -e "$cached_port" ]]; then
+      echo "$cached_port"
+      return 0
+    fi
+
+    if [[ -n "$device_json" ]] && "$PIO_PYTHON" - "$cached_port" "$device_json" <<'PY'
+import json
+import sys
+
+if len(sys.argv) < 3:
+    sys.exit(1)
+
+target = sys.argv[1].strip().lower()
+if not target:
+    sys.exit(1)
+
+try:
+    devices = json.loads(sys.argv[2] or "[]")
+except Exception:
+    sys.exit(1)
+
+if not isinstance(devices, list):
+    sys.exit(1)
+
+for dev in devices:
+    port = str(dev.get("port", "")).strip().lower()
+    if port == target:
+        sys.exit(0)
+
+sys.exit(1)
+PY
+    then
+      echo "$cached_port"
+      return 0
+    fi
+
+    echo "Saved upload port is stale: $cached_port. Auto-detecting active serial port..." >&2
+    rm -f "$UPLOAD_PORT_FILE"
+  fi
+
   if [[ -z "$device_json" ]]; then
     return 1
   fi
@@ -301,6 +349,11 @@ PY
 
 assert_upload_port_access() {
   local port="$1"
+  if [[ "$port" == /dev/* ]] && [[ ! -e "$port" ]]; then
+    echo "Serial port does not exist: $port" >&2
+    echo "Tip: reconnect the board and retry, or remove stale cache: rm -f $UPLOAD_PORT_FILE" >&2
+    return 1
+  fi
   if [[ -c "$port" ]] && [[ ! -r "$port" || ! -w "$port" ]]; then
     echo "Serial port exists but access is denied: $port" >&2
     echo "On Linux this is an OS-level permission/udev issue and cannot be installed locally in the project." >&2

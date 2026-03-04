@@ -324,33 +324,58 @@ try {
     }
 
     function Resolve-UploadPort {
+        $envPort = $null
         if ($env:UPLOAD_PORT) {
-            return $env:UPLOAD_PORT.Trim()
+            $envPort = $env:UPLOAD_PORT.Trim()
         }
 
+        $savedPort = $null
         if (Test-Path $UploadPortFile) {
             $saved = (Get-Content -Path $UploadPortFile -ErrorAction SilentlyContinue | Select-Object -First 1)
             if ($saved) {
                 $saved = $saved.Trim()
                 if ($saved) {
-                    return $saved
+                    $savedPort = $saved
                 }
             }
         }
 
+        $devices = @()
         $json = & $PioExe device list --json-output 2>$null
-        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($json)) {
-            return $null
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($json)) {
+            try {
+                $devices = @($json | ConvertFrom-Json)
+            }
+            catch {
+                $devices = @()
+            }
         }
 
-        try {
-            $devices = $json | ConvertFrom-Json
-        }
-        catch {
-            return $null
+        if (-not [string]::IsNullOrWhiteSpace($envPort)) {
+            if ($devices.Count -gt 0) {
+                $match = @($devices | Where-Object { ([string]$_.port).Trim() -ieq $envPort })
+                if ($match.Count -eq 0) {
+                    Write-Warning "UPLOAD_PORT points to missing device: $envPort"
+                }
+            }
+            return $envPort
         }
 
-        if (-not $devices) {
+        if (-not [string]::IsNullOrWhiteSpace($savedPort)) {
+            if ($devices.Count -eq 0) {
+                return $savedPort
+            }
+
+            $savedMatch = @($devices | Where-Object { ([string]$_.port).Trim() -ieq $savedPort })
+            if ($savedMatch.Count -gt 0) {
+                return $savedPort
+            }
+
+            Write-Host "Saved upload port is stale: $savedPort. Auto-detecting active serial port..."
+            Remove-Item -Path $UploadPortFile -Force -ErrorAction SilentlyContinue
+        }
+
+        if (-not $devices -or $devices.Count -eq 0) {
             return $null
         }
 

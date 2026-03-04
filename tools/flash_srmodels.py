@@ -5,7 +5,8 @@ This script automatically flashes models after the main firmware upload.
 Models are written to address 0x610000 (the 'model' partition in partitions.csv).
 """
 
-import os
+import subprocess
+from shlex import quote
 from pathlib import Path
 
 from SCons.Script import Import  # type: ignore
@@ -14,6 +15,7 @@ Import("env")  # type: ignore
 
 # Model partition address in flash (must match partitions.csv)
 SRMODEL_OFFSET = "0x610000"
+MIN_VALID_SRMODEL_SIZE_BYTES = 5
 
 
 def _flash_srmodels(target, source, env):
@@ -25,10 +27,24 @@ def _flash_srmodels(target, source, env):
         print(f"--- [ESP-SR] Flash skipped: {srmodels_path} not found")
         return
     
-    size_kb = srmodels_path.stat().st_size / 1024
+    size_bytes = srmodels_path.stat().st_size
+    if size_bytes < MIN_VALID_SRMODEL_SIZE_BYTES:
+        print(
+            f"--- [ESP-SR] Flash aborted: invalid srmodels.bin size={size_bytes} bytes "
+            "(models are not packed)"
+        )
+        env.Exit(1)
+        return
+
+    size_kb = size_bytes / 1024
     print(f"--- [ESP-SR] Flashing srmodels.bin ({size_kb:.1f} KB) to address {SRMODEL_OFFSET} ---")
     
     port = env.subst("$UPLOAD_PORT") or env.AutodetectUploadPort()
+    if not port:
+        print("--- [ESP-SR] Flash aborted: upload port was not detected")
+        env.Exit(1)
+        return
+
     baud = env.subst("$UPLOAD_SPEED") or "460800"
     mcu = env.BoardConfig().get("build.mcu", "esp32s3")
     
@@ -45,8 +61,13 @@ def _flash_srmodels(target, source, env):
         str(srmodels_path),
     ]
     
-    print(f"--- [ESP-SR] Command: {' '.join(cmd)}")
-    env.Execute(" ".join(cmd))
+    print(f"--- [ESP-SR] Command: {' '.join(quote(part) for part in cmd)}")
+    proc = subprocess.run(cmd, check=False)
+    if proc.returncode != 0:
+        print(f"--- [ESP-SR] Flash failed with exit code {proc.returncode}")
+        env.Exit(1)
+        return
+
     print("--- [ESP-SR] Models flashed successfully ---")
 
 

@@ -60,7 +60,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.5.0
+    version: 5.5.3
 direct_dependencies:
 - espressif/dl_fft
 - espressif/esp-dsp

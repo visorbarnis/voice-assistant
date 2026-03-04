@@ -4,6 +4,8 @@ Post-upload script for flashing settings.bin into the NVS partition.
 The script flashes only if .pio/build/<env>/settings.bin exists.
 """
 
+import subprocess
+from shlex import quote
 from pathlib import Path
 
 from SCons.Script import Import  # type: ignore
@@ -56,6 +58,11 @@ def _flash_settings(target, source, env):
         return
 
     port = env.subst("$UPLOAD_PORT") or env.AutodetectUploadPort()
+    if not port:
+        print("--- [NVS] Flash aborted: upload port was not detected")
+        env.Exit(1)
+        return
+
     baud = env.subst("$UPLOAD_SPEED") or "460800"
     mcu = env.BoardConfig().get("build.mcu", "esp32s3")
 
@@ -82,9 +89,14 @@ def _flash_settings(target, source, env):
         f"--- [NVS] Flashing {SETTINGS_BIN_NAME} ({size_kb:.1f} KB) "
         f"to {nvs_offset} ---"
     )
-    print(f"--- [NVS] Command: {' '.join(cmd)}")
+    print(f"--- [NVS] Command: {' '.join(quote(part) for part in cmd)}")
 
-    env.Execute(" ".join(cmd))
+    proc = subprocess.run(cmd, check=False)
+    if proc.returncode != 0:
+        print(f"--- [NVS] Flash failed with exit code {proc.returncode}")
+        env.Exit(1)
+        return
+
     print("--- [NVS] settings.bin flashed successfully ---")
 
 
