@@ -96,9 +96,9 @@ static const char *TAG = "WAKE_WORD";
 // ----------------------------------------------------------------------------
 // Recognition sensitivity settings
 // ----------------------------------------------------------------------------
-// Detection modes: DET_MODE_90, DET_MODE_95 (stricter)
-// DET_MODE_90 - better for noisy environments, more false positives
-// DET_MODE_95 - stricter, fewer false positives
+// Detection modes: DET_MODE_90, DET_MODE_95
+// DET_MODE_90 - normal profile
+// DET_MODE_95 - aggressive profile (higher trigger probability and false positives)
 #define WAKENET_DETECTION_MODE DET_MODE_95
 
 // Bit shift for converting 32-bit I2S -> 16-bit PCM (mic gain)

@@ -13,7 +13,7 @@ api_key,data,string,your_api_key
 client_mode,data,string,half-duplex
 speak_mode,data,string,half-duplex
 wake_word_model,data,string,wn9_mycroft_tts
-wake_mode,data,string,strict
+wake_mode,data,string,aggressive
 wake_level,data,u32,6
 audio_settings,namespace,,
 playback_rate,data,u32,16000

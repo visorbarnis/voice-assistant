@@ -5,6 +5,7 @@
 
 #include "afe_pipeline.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "driver/i2s_std.h"
@@ -36,6 +37,12 @@ static const char *TAG = "AFE_PIPE";
 #define WAKE_SENS_LEVEL_MAX 10U
 #define WAKE_SENS_THRESHOLD_STRICT 0.90f
 #define WAKE_SENS_THRESHOLD_SENSITIVE 0.40f
+// Wake gating to reduce false positives.
+#define WAKE_REQUIRE_VAD_SPEECH 1
+#define WAKE_REQUIRE_VAD_STREAK 1
+#define WAKE_MIN_VAD_SPEECH_STREAK 2U
+#define WAKE_REQUIRE_MIN_VOLUME_DBFS 1
+#define WAKE_MIN_VOLUME_DBFS (-65.0f)
 
 // 10ms frame for AEC synchronization
 #define AEC_FRAME_SAMPLES 160                                 // 10ms @ 16kHz
@@ -76,6 +83,7 @@ typedef struct {
   volatile bool reset_requested;
   int64_t wake_guard_until_us;
   bool wake_guard_logged;
+  uint8_t vad_speech_streak;
 
   // TX buffer to split AFE data into 10ms frames
   int16_t *tx_buffer;     // Buffer for accumulating AFE data
@@ -103,10 +111,74 @@ static float wake_sensitivity_level_to_threshold(uint32_t level) {
   return WAKE_SENS_THRESHOLD_STRICT - ((float)level * step);
 }
 
+static int wake_mode_to_det_mode(const char *wake_mode, bool *legacy_alias_used) {
+  if (legacy_alias_used) {
+    *legacy_alias_used = false;
+  }
+
+  if (!wake_mode || wake_mode[0] == '\0' || strcmp(wake_mode, "normal") == 0) {
+    return DET_MODE_90;
+  }
+
+  if (strcmp(wake_mode, "aggressive") == 0) {
+    return DET_MODE_95;
+  }
+
+  // Backward-compatible alias from older configs/UI.
+  if (strcmp(wake_mode, "strict") == 0) {
+    if (legacy_alias_used) {
+      *legacy_alias_used = true;
+    }
+    return DET_MODE_95;
+  }
+
+  // Fallback for unexpected values.
+  return DET_MODE_90;
+}
+
 static void wake_guard_arm(void) {
   s_afe.wake_guard_until_us =
       esp_timer_get_time() + (int64_t)WAKE_GUARD_MS * 1000;
   s_afe.wake_guard_logged = false;
+}
+
+static void wake_update_vad_streak(vad_state_t vad_state) {
+  if (vad_state == VAD_SPEECH) {
+    if (s_afe.vad_speech_streak < 255U) {
+      s_afe.vad_speech_streak++;
+    }
+  } else {
+    s_afe.vad_speech_streak = 0;
+  }
+}
+
+static bool wake_passes_gates(const afe_fetch_result_t *res) {
+#if WAKE_REQUIRE_VAD_SPEECH
+  if (res->vad_state != VAD_SPEECH) {
+    ESP_LOGW(TAG, "WakeNet ignored by gate: vad_state=%d, volume=%.1f dBFS",
+             (int)res->vad_state, (double)res->data_volume);
+    return false;
+  }
+#endif
+
+#if WAKE_REQUIRE_VAD_STREAK
+  if (s_afe.vad_speech_streak < WAKE_MIN_VAD_SPEECH_STREAK) {
+    ESP_LOGW(TAG, "WakeNet ignored by gate: speech_streak=%u (<%u), volume=%.1f dBFS",
+             (unsigned)s_afe.vad_speech_streak,
+             (unsigned)WAKE_MIN_VAD_SPEECH_STREAK, (double)res->data_volume);
+    return false;
+  }
+#endif
+
+#if WAKE_REQUIRE_MIN_VOLUME_DBFS
+  if (!isfinite(res->data_volume) || res->data_volume < WAKE_MIN_VOLUME_DBFS) {
+    ESP_LOGW(TAG, "WakeNet ignored by gate: volume=%.1f dBFS (min=%.1f dBFS)",
+             (double)res->data_volume, (double)WAKE_MIN_VOLUME_DBFS);
+    return false;
+  }
+#endif
+
+  return true;
 }
 
 static void ref_buffer_reset(void) {
@@ -289,6 +361,8 @@ static void handle_fetch_result(afe_fetch_result_t *res) {
     return;
   }
 
+  wake_update_vad_streak(res->vad_state);
+
   // Wake-word detection (only when session is NOT active)
   if (res->wakeup_state == WAKENET_DETECTED && !s_afe.session_active &&
       !s_afe.session_start_inflight) {
@@ -299,10 +373,14 @@ static void handle_fetch_result(afe_fetch_result_t *res) {
         s_afe.wake_guard_logged = true;
       }
     } else {
+      if (!wake_passes_gates(res)) {
+        return;
+      }
       ESP_LOGI(TAG, ">>> WAKE WORD DETECTED <<<");
       bool should_start = true;
       if (s_on_wake_cb) {
-        should_start = s_on_wake_cb(s_afe.config->wakenet_model_name, 0);
+        should_start =
+            s_on_wake_cb(s_afe.config->wakenet_model_name, res->data_volume);
       }
       if (should_start) {
         s_afe.session_start_inflight = true;
@@ -474,13 +552,15 @@ esp_err_t afe_pipeline_init(srmodel_list_t *models) {
 
   const runtime_config_t *runtime_cfg = runtime_config_get();
   uint32_t wake_level = 6;
+  const char *wake_mode_cfg = "aggressive";
+  bool wake_mode_legacy_alias_used = false;
   int wakenet_mode = DET_MODE_95;
   if (runtime_cfg) {
     wake_level = runtime_cfg->wake_sensitivity_level;
-    if (strcmp(runtime_cfg->wake_detection_mode, "normal") == 0) {
-      wakenet_mode = DET_MODE_90;
-    }
+    wake_mode_cfg = runtime_cfg->wake_detection_mode;
   }
+  wakenet_mode =
+      wake_mode_to_det_mode(wake_mode_cfg, &wake_mode_legacy_alias_used);
   s_afe.config->wakenet_mode = wakenet_mode;
   s_afe.config->fixed_first_channel = true;
   s_afe.config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
@@ -525,8 +605,11 @@ esp_err_t afe_pipeline_init(srmodel_list_t *models) {
                (unsigned)wake_level, (double)wake_threshold);
     }
   }
+  if (wake_mode_legacy_alias_used) {
+    ESP_LOGW(TAG, "Wake mode 'strict' is legacy alias of 'aggressive'");
+  }
   ESP_LOGI(TAG, "Wake detection mode=%s (%s)",
-           (wakenet_mode == DET_MODE_90) ? "normal" : "strict",
+           wake_mode_cfg,
            (wakenet_mode == DET_MODE_90) ? "DET_MODE_90" : "DET_MODE_95");
 
   s_afe.feed_chunk = s_afe.iface->get_feed_chunksize(s_afe.data);
@@ -655,6 +738,7 @@ void afe_pipeline_reset(void) {
     return;
   }
   wake_guard_arm();
+  s_afe.vad_speech_streak = 0;
   s_afe.reset_requested = true;
   s_afe.tx_buffer_count = 0; // Reset TX buffer on interruption
 }
@@ -668,12 +752,14 @@ void afe_pipeline_register_callbacks(afe_wake_word_detected_cb_t on_wake,
 void afe_pipeline_notify_session_start(void) {
   s_afe.session_active = true;
   s_afe.session_start_inflight = false;
+  s_afe.vad_speech_streak = 0;
   afe_set_processing_mode(true);
 }
 
 void afe_pipeline_notify_session_end(void) {
   s_afe.session_active = false;
   s_afe.session_start_inflight = false;
+  s_afe.vad_speech_streak = 0;
   afe_set_processing_mode(false);
   afe_pipeline_reset();
 

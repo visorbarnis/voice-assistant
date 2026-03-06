@@ -41,7 +41,7 @@ static const char *TAG = "RUNTIME_CFG";
 #define KEY_AUDIO_START_MS "buffer_start_ms"
 #define KEY_AUDIO_MAX_SECONDS "buffer_max_s"
 
-#define DEFAULT_WAKE_DETECTION_MODE "strict"
+#define DEFAULT_WAKE_DETECTION_MODE "aggressive"
 #define DEFAULT_WAKE_SENSITIVITY_LEVEL 6U
 #define DEFAULT_AUDIO_PLAYBACK_VOLUME_PERCENT 100U
 
@@ -148,6 +148,7 @@ static void sanitize_loaded_config(void) {
 
   if (s_config.wake_detection_mode[0] == '\0' ||
       (strcmp(s_config.wake_detection_mode, "normal") != 0 &&
+       strcmp(s_config.wake_detection_mode, "aggressive") != 0 &&
        strcmp(s_config.wake_detection_mode, "strict") != 0)) {
     strlcpy(s_config.wake_detection_mode, DEFAULT_WAKE_DETECTION_MODE,
             sizeof(s_config.wake_detection_mode));

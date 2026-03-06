@@ -42,7 +42,7 @@ var allFields = []fieldSpec{
 	{Namespace: "server_settings", Key: "client_mode", Label: "Client Mode", Type: "string", Default: "half-duplex"},
 	{Namespace: "server_settings", Key: "speak_mode", Label: "Speak Mode", Type: "string", Default: "half-duplex"},
 	{Namespace: "server_settings", Key: "wake_word_model", Label: "Wake-Word Model", Type: "string", Default: defaultWakeWordModel},
-	{Namespace: "server_settings", Key: "wake_mode", Label: "Wake Strictness", Type: "string", Default: "strict"},
+	{Namespace: "server_settings", Key: "wake_mode", Label: "Wake Detection Mode", Type: "string", Default: "aggressive"},
 	{Namespace: "server_settings", Key: "wake_level", Label: "Wake Sensitivity (0..10)", Type: "u32", Default: "6"},
 
 	{Namespace: "audio_settings", Key: "playback_rate", Label: "Playback Rate (Hz)", Type: "u32", Default: "16000"},
@@ -189,7 +189,7 @@ func (s *uiState) buildMainUI() {
 				fieldID("server_settings", "wake_mode"),
 				fieldID("server_settings", "wake_level"),
 			),
-			"Tips:\n- server identity and authorization\n- wake strictness: normal=DET_MODE_90, strict=DET_MODE_95\n- wake sensitivity: 0 strictest, 10 most sensitive\n- values are validated on Apply",
+			"Tips:\n- server identity and authorization\n- wake mode: normal=DET_MODE_90, aggressive=DET_MODE_95\n- strict is legacy alias of aggressive\n- wake sensitivity: 0 strictest, 10 most sensitive\n- values are validated on Apply",
 		)
 	})
 	s.menu.AddItem("Edit Audio", "playback volume (0..100%)", '3', func() {
@@ -422,14 +422,14 @@ func (s *uiState) openSpecEditor(title string, specs []fieldSpec, helpText strin
 		if id == fieldID("server_settings", "wake_mode") {
 			options := []string{
 				"normal (DET_MODE_90)",
-				"strict (DET_MODE_95)",
+				"aggressive (DET_MODE_95)",
 			}
-			values := []string{"normal", "strict"}
+			values := []string{"normal", "aggressive"}
 
 			mode := strings.ToLower(strings.TrimSpace(curr))
-			idx := 1
-			if mode == "normal" {
-				idx = 0
+			idx := 0
+			if mode == "aggressive" || mode == "strict" {
+				idx = 1
 			}
 
 			drop := tview.NewDropDown().
@@ -440,7 +440,7 @@ func (s *uiState) openSpecEditor(title string, specs []fieldSpec, helpText strin
 			getters[id] = func() string {
 				i, _ := drop.GetCurrentOption()
 				if i < 0 || i >= len(values) {
-					return "strict"
+					return "aggressive"
 				}
 				return values[i]
 			}
@@ -780,8 +780,8 @@ func validateValues(values map[string]string) error {
 				return errors.New("server_settings.speak_mode must be 'half-duplex' or 'full-duplex'")
 			}
 		case fieldID("server_settings", "wake_mode"):
-			if val != "normal" && val != "strict" {
-				return errors.New("server_settings.wake_mode must be 'normal' or 'strict'")
+			if val != "normal" && val != "aggressive" && val != "strict" {
+				return errors.New("server_settings.wake_mode must be 'normal', 'aggressive', or legacy 'strict'")
 			}
 		case fieldID("server_settings", "wake_word_model"):
 			if val == "" {

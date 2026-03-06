@@ -43,7 +43,7 @@ typedef struct {
   char voice_api_key[RUNTIME_CONFIG_MAX_API_KEY_LEN + 1];
   char voice_client_mode[RUNTIME_CONFIG_MAX_MODE_LEN + 1];
   char speak_mode[RUNTIME_CONFIG_MAX_MODE_LEN + 1];
-  char wake_detection_mode[RUNTIME_CONFIG_MAX_MODE_LEN + 1]; // normal|strict
+  char wake_detection_mode[RUNTIME_CONFIG_MAX_MODE_LEN + 1]; // normal|aggressive|strict(legacy)
   uint32_t wake_sensitivity_level; // 0..10, where 10 is most sensitive
 
   uint32_t audio_playback_sample_rate;

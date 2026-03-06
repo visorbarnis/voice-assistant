@@ -112,7 +112,7 @@ In the menu that opens, you can:
 - **Parameter** — any custom information to help the AI (added to context).
 - **API Key** — the key you generated in the <a href=https://voice-assistant.io>voice-assistant.io</a> service. (required)
 - **Wake-Word Model** — select the model for the wake word (Alexa, Jarvis). (required)
-- **Wake Strictness** — recognition strictness (affects false positives).
+- **Wake Detection Mode** — `normal` (DET_MODE_90) or `aggressive` (DET_MODE_95); affects false positives (`strict` is accepted as legacy alias of `aggressive`).
 - **Wake Sensitivity (0–10)** — microphone sensitivity (affects false positives).
 - **Playback Volume (0–100)** — output gain applied to PCM before I2S playback (mapped internally to 0–250%).
 
