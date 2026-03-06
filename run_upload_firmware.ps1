@@ -45,6 +45,7 @@ $script:AppOffset = ""
 $script:ModelOffset = ""
 $script:NvsOffset = ""
 $script:NvsSize = ""
+$script:SettingsCsvPath = $null
 
 Push-Location $RootDir
 
@@ -198,13 +199,13 @@ try {
             return $false
         }
 
-        & $PioPython -m pip --version *> $null
+        & $PioPython -m pip --version 1>$null 2>$null
         if ($LASTEXITCODE -eq 0) {
             return $true
         }
 
-        & $PioPython -m ensurepip --upgrade *> $null
-        & $PioPython -m pip --version *> $null
+        & $PioPython -m ensurepip --upgrade 1>$null 2>$null
+        & $PioPython -m pip --version 1>$null 2>$null
         if ($LASTEXITCODE -eq 0) {
             return $true
         }
@@ -212,8 +213,8 @@ try {
         $getPipPath = Join-Path $LocalDir "get-pip.py"
         try {
             Download-File -Url "https://bootstrap.pypa.io/get-pip.py" -OutFile $getPipPath
-            & $PioPython $getPipPath *> $null
-            & $PioPython -m pip --version *> $null
+            & $PioPython $getPipPath 1>$null 2>$null
+            & $PioPython -m pip --version 1>$null 2>$null
             return ($LASTEXITCODE -eq 0)
         }
         finally {
@@ -251,7 +252,7 @@ try {
                 Recreate-LocalVenv
             }
 
-            & $PioPython -c "import sys; print(sys.version)" *> $null
+            & $PioPython -c "import sys; print(sys.version)" 1>$null 2>$null
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "Local venv python is broken. Cleaning and retrying..."
                 if (Test-Path $PioVenvDir) {
@@ -468,8 +469,19 @@ try {
         return $null
     }
 
-    function Detect-SettingsWakeWordModel {
+    function Require-SettingsCsv {
         $settingsCsv = Find-SettingsCsv
+        if ([string]::IsNullOrWhiteSpace($settingsCsv)) {
+            throw ("settings.csv was not found. Expected one of:`n  - {0}`n  - {1}`nCreate settings.csv (for example, copy from settings.csv.example) and retry." -f (Join-Path $RootDir "settings.csv"), (Join-Path $RootDir "config\settings.csv"))
+        }
+        return $settingsCsv
+    }
+
+    function Detect-SettingsWakeWordModel {
+        $settingsCsv = $script:SettingsCsvPath
+        if ([string]::IsNullOrWhiteSpace($settingsCsv)) {
+            $settingsCsv = Find-SettingsCsv
+        }
         if ([string]::IsNullOrWhiteSpace($settingsCsv)) {
             return $null
         }
@@ -522,7 +534,7 @@ except Exception:
     }
 
     function Ensure-NvsGenerator {
-        & $PioPython -c "import esp_idf_nvs_partition_gen" *> $null
+        & $PioPython -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('esp_idf_nvs_partition_gen') else 1)" 1>$null 2>$null
         if ($LASTEXITCODE -eq 0) {
             return
         }
@@ -937,9 +949,10 @@ NVS_OFFSET=$script:NvsOffset
     function Build-FreshSettingsImage {
         Load-PartitionOffsets
 
-        $settingsCsv = Find-SettingsCsv
+        $settingsCsv = $script:SettingsCsvPath
         if ([string]::IsNullOrWhiteSpace($settingsCsv)) {
-            throw ("settings.csv was not found. Expected one of:`n  - {0}`n  - {1}" -f (Join-Path $RootDir "settings.csv"), (Join-Path $RootDir "config\settings.csv"))
+            $settingsCsv = Require-SettingsCsv
+            $script:SettingsCsvPath = $settingsCsv
         }
 
         Ensure-NvsGenerator
@@ -1055,6 +1068,7 @@ NVS_OFFSET=$script:NvsOffset
     }
 
     Ensure-Windows
+    $script:SettingsCsvPath = Require-SettingsCsv
     Ensure-LocalPlatformIO
     $env:PLATFORMIO_CORE_DIR = Join-Path $RootDir ".pio_core"
     $ProjectConfigPath = Resolve-ProjectConfigPath
@@ -1073,6 +1087,14 @@ NVS_OFFSET=$script:NvsOffset
     }
 
     Start-SerialMonitor -MonitorPort $script:LastUploadPort
+}
+catch {
+    $message = $_.Exception.Message
+    if ([string]::IsNullOrWhiteSpace($message)) {
+        $message = $_.ToString()
+    }
+    [Console]::Error.WriteLine($message)
+    exit 1
 }
 finally {
     Pop-Location
