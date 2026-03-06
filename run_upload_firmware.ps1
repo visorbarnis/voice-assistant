@@ -509,7 +509,7 @@ except Exception:
     sys.exit(0)
 '@
 
-        $result = & $PioPython -c $code $settingsCsv
+        $result = $code | & $PioPython - $settingsCsv
         if ($LASTEXITCODE -ne 0) {
             return $null
         }
@@ -583,7 +583,7 @@ for key in ("monitor_speed", "upload_speed"):
 print("")
 '@
 
-        $detected = & $PioPython -c $code $confFile $EnvName
+        $detected = $code | & $PioPython - $confFile $EnvName
         if ($LASTEXITCODE -eq 0) {
             $detectedValue = (($detected -join "`n").Trim())
             if ($detectedValue -match '^\d+$') {
@@ -741,7 +741,7 @@ if not updated_any:
     sys.exit(1)
 '@
 
-        & $PioPython -c $code $RootDir $EnvName $settingsModel
+        $null = $code | & $PioPython - $RootDir $EnvName $settingsModel
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to sync wake-word model with settings."
         }
@@ -817,7 +817,7 @@ print(f"NVS_OFFSET={nvs_offset}")
 print(f"NVS_SIZE={nvs_size}")
 '@
 
-        $output = & $PioPython -c $code $PartitionsCsv
+        $output = $code | & $PioPython - $PartitionsCsv
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to resolve partition offsets from $PartitionsCsv"
         }
