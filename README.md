@@ -143,7 +143,11 @@ The `run_upload` script does everything at once: compiles the project, uploads t
 Use `run_upload_firmware.sh` if you want to reuse the latest compiled binaries from the `firmware/` directory.
 
 ```bash
+# Linux / macOS
 ./run_upload_firmware.sh
+
+# Windows (PowerShell)
+.\run_upload_firmware.ps1
 ```
 
 Script behavior:
