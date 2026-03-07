@@ -47,6 +47,10 @@ CONFIG_SR_WN_WN9_MYCROFT_TTS=y
 # CONFIG_SR_WN_WN9_HILEXIN is not set
 CONFIG_WAKE_WORD_MODEL="wn9_mycroft_tts"
 
+# Prefer model-based VAD to avoid WebRTC-VAD fallback instability.
+# CONFIG_SR_VADN_WEBRTC is not set
+CONFIG_SR_VADN_VADNET1_MEDIUM=y
+
 # ------------------------------------------------------------------------------
 # Logging
 # ------------------------------------------------------------------------------

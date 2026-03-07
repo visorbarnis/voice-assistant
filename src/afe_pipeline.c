@@ -16,6 +16,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_vadn_models.h"
 #include "esp_wn_models.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -153,8 +154,9 @@ static void wake_update_vad_streak(vad_state_t vad_state) {
 }
 
 static bool wake_passes_gates(const afe_fetch_result_t *res) {
+  const bool vad_gates_enabled = s_afe.config && s_afe.config->vad_init;
 #if WAKE_REQUIRE_VAD_SPEECH
-  if (res->vad_state != VAD_SPEECH) {
+  if (vad_gates_enabled && res->vad_state != VAD_SPEECH) {
     ESP_LOGW(TAG, "WakeNet ignored by gate: vad_state=%d, volume=%.1f dBFS",
              (int)res->vad_state, (double)res->data_volume);
     return false;
@@ -162,7 +164,7 @@ static bool wake_passes_gates(const afe_fetch_result_t *res) {
 #endif
 
 #if WAKE_REQUIRE_VAD_STREAK
-  if (s_afe.vad_speech_streak < WAKE_MIN_VAD_SPEECH_STREAK) {
+  if (vad_gates_enabled && s_afe.vad_speech_streak < WAKE_MIN_VAD_SPEECH_STREAK) {
     ESP_LOGW(TAG, "WakeNet ignored by gate: speech_streak=%u (<%u), volume=%.1f dBFS",
              (unsigned)s_afe.vad_speech_streak,
              (unsigned)WAKE_MIN_VAD_SPEECH_STREAK, (double)res->data_volume);
@@ -548,6 +550,12 @@ esp_err_t afe_pipeline_init(srmodel_list_t *models) {
   s_afe.config->se_init = false;
   s_afe.config->ns_init = true; // NS is needed only for WakeNet
   s_afe.config->vad_init = true;
+  s_afe.config->vad_mode = VAD_MODE_3;
+  s_afe.config->vad_min_speech_ms = 128;
+  s_afe.config->vad_min_noise_ms = 1000;
+  s_afe.config->vad_delay_ms = 128;
+  s_afe.config->vad_mute_playback = false;
+  s_afe.config->vad_enable_channel_trigger = false;
   s_afe.config->wakenet_init = true;
 
   const runtime_config_t *runtime_cfg = runtime_config_get();
@@ -578,6 +586,18 @@ esp_err_t afe_pipeline_init(srmodel_list_t *models) {
     wakenet_name = esp_srmodel_filter(models, ESP_WN_PREFIX, NULL);
   }
   s_afe.config->wakenet_model_name = wakenet_name;
+
+  char *vad_model_name = esp_srmodel_filter(models, ESP_VADN_PREFIX, NULL);
+  if (vad_model_name) {
+    s_afe.config->vad_model_name = vad_model_name;
+    s_afe.config->vad_init = true;
+    ESP_LOGI(TAG, "VAD model selected: %s", vad_model_name);
+  } else {
+    s_afe.config->vad_model_name = NULL;
+    s_afe.config->vad_init = false;
+    ESP_LOGW(TAG,
+             "No VADNET model found; disabling VAD to avoid unstable WebRTC-VAD path");
+  }
 
   s_afe.config = afe_config_check(s_afe.config);
 

@@ -17,6 +17,7 @@
 #include "session_state_bridge.h"
 #include "wifi_manager.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -423,6 +424,51 @@ static bool is_gpio_command_type_message(const char *payload) {
          strstr(payload, "\"type\": \"gpio_command\"") != NULL;
 }
 
+static bool parse_volume_percent(const cJSON *item, const char *field_name,
+                                 int *out_volume) {
+  if (!item || !field_name || !out_volume) {
+    return false;
+  }
+
+  double raw = 0.0;
+  if (cJSON_IsNumber(item)) {
+    raw = item->valuedouble;
+  } else if (cJSON_IsString(item) && item->valuestring &&
+             item->valuestring[0] != '\0') {
+    char *endptr = NULL;
+    raw = strtod(item->valuestring, &endptr);
+    if (!endptr || endptr == item->valuestring || *endptr != '\0') {
+      return false;
+    }
+  } else {
+    return false;
+  }
+
+  if (!isfinite(raw)) {
+    return false;
+  }
+
+  // Accept both formats:
+  // - volume/value: 0..1 (normalized) or 0..100 (percent)
+  // - volume_pct: 0..100 (percent only)
+  double percent = raw;
+  if (strcmp(field_name, "volume_pct") != 0 && raw >= 0.0 && raw <= 1.0) {
+    percent = raw * 100.0;
+  }
+
+  if (percent < 0.0 || percent > 100.0) {
+    return false;
+  }
+
+  int rounded = (int)(percent + 0.5);
+  if (rounded > 100) {
+    rounded = 100;
+  }
+
+  *out_volume = rounded;
+  return true;
+}
+
 static bool handle_set_volume_command(const char *payload, size_t payload_len) {
   if (!payload || payload_len == 0) {
     return false;
@@ -444,23 +490,30 @@ static bool handle_set_volume_command(const char *payload, size_t payload_len) {
   }
   handled = true;
 
+  int volume = -1;
+  const char *volume_field = NULL;
+
   cJSON *volume_item = cJSON_GetObjectItem(root, "value");
-  if (!cJSON_IsNumber(volume_item)) {
+  if (parse_volume_percent(volume_item, "value", &volume)) {
+    volume_field = "value";
+  }
+
+  if (!volume_field) {
     volume_item = cJSON_GetObjectItem(root, "volume");
+    if (parse_volume_percent(volume_item, "volume", &volume)) {
+      volume_field = "volume";
+    }
   }
-  if (!cJSON_IsNumber(volume_item)) {
+
+  if (!volume_field) {
     volume_item = cJSON_GetObjectItem(root, "volume_pct");
+    if (parse_volume_percent(volume_item, "volume_pct", &volume)) {
+      volume_field = "volume_pct";
+    }
   }
 
-  if (!cJSON_IsNumber(volume_item)) {
-    ESP_LOGW(TAG,
-             "set_volume ignored: missing numeric value (expected 0..100)");
-    goto cleanup;
-  }
-
-  int volume = volume_item->valueint;
-  if (volume < 0 || volume > 100) {
-    ESP_LOGW(TAG, "set_volume ignored: value=%d out of range (0..100)", volume);
+  if (!volume_field) {
+    ESP_LOGW(TAG, "set_volume ignored: invalid value (expected 0..100 or 0..1)");
     goto cleanup;
   }
 
@@ -471,7 +524,8 @@ static bool handle_set_volume_command(const char *payload, size_t payload_len) {
   }
 
   schedule_volume_persist((uint32_t)volume);
-  ESP_LOGI(TAG, "set_volume applied: %d%% (persist scheduled)", volume);
+  ESP_LOGI(TAG, "set_volume applied: %d%% (source=%s, persist scheduled)",
+           volume, volume_field);
 
 cleanup:
   cJSON_Delete(root);
