@@ -26,7 +26,7 @@ $BuildDir = Join-Path $RootDir ".pio\build\$EnvName"
 $BuildBootloader = Join-Path $BuildDir "bootloader.bin"
 $BuildPartitions = Join-Path $BuildDir "partitions.bin"
 $BuildApp = Join-Path $BuildDir "firmware.bin"
-$BuildSrmodels = Join-Path $BuildDir "srmodels\srmodels.bin"
+$BuildSrmodelsDefault = Join-Path $BuildDir "srmodels\srmodels.bin"
 $BuildSettings = Join-Path $BuildDir "settings.bin"
 
 $PartitionsCsv = Join-Path $RootDir "partitions.csv"
@@ -350,6 +350,26 @@ try {
         }
     }
 
+    function Invoke-PioStreaming {
+        param(
+            [Parameter(Mandatory = $true)][string[]]$Args
+        )
+
+        $effectiveArgs = @($Args)
+        if ($effectiveArgs.Count -gt 0 -and $effectiveArgs[0] -eq "run") {
+            $tail = @()
+            if ($effectiveArgs.Count -gt 1) {
+                $tail = $effectiveArgs[1..($effectiveArgs.Count - 1)]
+            }
+            $effectiveArgs = @("run", "-d", $RootDir, "-c", $ProjectConfigPath) + $tail
+        }
+
+        & $PioExe @effectiveArgs 2>&1 | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            throw "Command failed: $PioExe $($effectiveArgs -join ' ')"
+        }
+    }
+
     function Resolve-UploadPort {
         $envPort = $null
         if ($env:UPLOAD_PORT) {
@@ -453,6 +473,54 @@ try {
         if ($item.PSIsContainer -or $item.Length -le 0) {
             throw "Required file is missing or empty: $Path"
         }
+    }
+
+    function Find-BuildSrmodels {
+        $candidates = @(
+            $BuildSrmodelsDefault
+            (Join-Path $BuildDir "srmodels.bin")
+        )
+
+        foreach ($candidate in $candidates) {
+            if (-not (Test-Path $candidate)) {
+                continue
+            }
+
+            $item = Get-Item -Path $candidate
+            if (-not $item.PSIsContainer -and $item.Length -gt 0) {
+                return $candidate
+            }
+        }
+
+        $discovered = Get-ChildItem -Path $BuildDir -Filter "srmodels.bin" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($discovered -and $discovered.Length -gt 0) {
+            return $discovered.FullName
+        }
+
+        return $null
+    }
+
+    function Ensure-BuildSrmodels {
+        $srmodelsPath = Find-BuildSrmodels
+        if (-not [string]::IsNullOrWhiteSpace($srmodelsPath)) {
+            return $srmodelsPath
+        }
+
+        Write-Host "srmodels.bin is missing after the first build. Re-running build once now that managed components are available..."
+        try {
+            Invoke-PioStreaming -Args @("run", "-e", $EnvName)
+        }
+        catch {
+            Write-Error "Build error: srmodels.bin was not generated."
+            throw
+        }
+
+        $srmodelsPath = Find-BuildSrmodels
+        if ([string]::IsNullOrWhiteSpace($srmodelsPath)) {
+            throw "srmodels.bin is still missing after the retry build."
+        }
+
+        return $srmodelsPath
     }
 
     function Find-SettingsCsv {
@@ -898,14 +966,15 @@ print(f"NVS_SIZE={nvs_size}")
         Require-File -Path $BuildBootloader
         Require-File -Path $BuildPartitions
         Require-File -Path $BuildApp
-        Require-File -Path $BuildSrmodels
+        $buildSrmodels = Ensure-BuildSrmodels
+        Require-File -Path $buildSrmodels
         Load-PartitionOffsets
 
         New-Item -ItemType Directory -Force -Path $FirmwareDir | Out-Null
         Copy-Item -Path $BuildBootloader -Destination $FirmwareBootloader -Force
         Copy-Item -Path $BuildPartitions -Destination $FirmwarePartitions -Force
         Copy-Item -Path $BuildApp -Destination $FirmwareApp -Force
-        Copy-Item -Path $BuildSrmodels -Destination $FirmwareSrmodels -Force
+        Copy-Item -Path $buildSrmodels -Destination $FirmwareSrmodels -Force
         Remove-Item -Path $FirmwareSettings -Force -ErrorAction SilentlyContinue
 
         $wakeModel = Detect-WakeWordModel

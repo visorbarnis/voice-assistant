@@ -15,6 +15,17 @@ $MiniforgeDir = Join-Path $LocalDir "miniforge3"
 $MiniforgePython = Join-Path $MiniforgeDir "python.exe"
 $UploadPortFile = Join-Path $LocalDir "upload_port"
 $ProjectConfigPath = Join-Path $RootDir "platformio.ini"
+$FirmwareDir = Join-Path $RootDir "firmware"
+$FirmwareManifest = Join-Path $FirmwareDir "manifest.env"
+$FirmwareBootloader = Join-Path $FirmwareDir "bootloader.bin"
+$FirmwarePartitions = Join-Path $FirmwareDir "partitions.bin"
+$FirmwareApp = Join-Path $FirmwareDir "firmware.bin"
+$FirmwareSrmodels = Join-Path $FirmwareDir "srmodels.bin"
+$BuildDir = Join-Path $RootDir ".pio\build\$EnvName"
+$BuildBootloader = Join-Path $BuildDir "bootloader.bin"
+$BuildPartitions = Join-Path $BuildDir "partitions.bin"
+$BuildApp = Join-Path $BuildDir "firmware.bin"
+$BuildSrmodelsDefault = Join-Path $BuildDir "srmodels\srmodels.bin"
 
 Push-Location $RootDir
 
@@ -323,6 +334,26 @@ try {
         }
     }
 
+    function Invoke-PioStreaming {
+        param(
+            [Parameter(Mandatory = $true)][string[]]$Args
+        )
+
+        $effectiveArgs = @($Args)
+        if ($effectiveArgs.Count -gt 0 -and $effectiveArgs[0] -eq "run") {
+            $tail = @()
+            if ($effectiveArgs.Count -gt 1) {
+                $tail = $effectiveArgs[1..($effectiveArgs.Count - 1)]
+            }
+            $effectiveArgs = @("run", "-d", $RootDir, "-c", $ProjectConfigPath) + $tail
+        }
+
+        & $PioExe @effectiveArgs 2>&1 | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            throw "Command failed: $PioExe $($effectiveArgs -join ' ')"
+        }
+    }
+
     function Resolve-UploadPort {
         $envPort = $null
         if ($env:UPLOAD_PORT) {
@@ -413,10 +444,139 @@ try {
         return $null
     }
 
+    function Require-File {
+        param(
+            [Parameter(Mandatory = $true)][string]$Path
+        )
+
+        if (-not (Test-Path $Path)) {
+            throw "Required file is missing: $Path"
+        }
+
+        $item = Get-Item -Path $Path
+        if ($item.PSIsContainer -or $item.Length -le 0) {
+            throw "Required file is missing or empty: $Path"
+        }
+    }
+
+    function Find-BuildSrmodels {
+        $candidates = @(
+            $BuildSrmodelsDefault
+            (Join-Path $BuildDir "srmodels.bin")
+        )
+
+        foreach ($candidate in $candidates) {
+            if (-not (Test-Path $candidate)) {
+                continue
+            }
+
+            $item = Get-Item -Path $candidate
+            if (-not $item.PSIsContainer -and $item.Length -gt 0) {
+                return $candidate
+            }
+        }
+
+        $discovered = Get-ChildItem -Path $BuildDir -Filter "srmodels.bin" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($discovered -and $discovered.Length -gt 0) {
+            return $discovered.FullName
+        }
+
+        return $null
+    }
+
+    function Ensure-BuildSrmodels {
+        $srmodelsPath = Find-BuildSrmodels
+        if (-not [string]::IsNullOrWhiteSpace($srmodelsPath)) {
+            return $srmodelsPath
+        }
+
+        Write-Host "srmodels.bin is missing after the first build. Re-running build once now that managed components are available..."
+        try {
+            Invoke-PioStreaming -Args @("run", "-e", $EnvName)
+        }
+        catch {
+            Write-Error "Build error: srmodels.bin was not generated."
+            throw
+        }
+
+        $srmodelsPath = Find-BuildSrmodels
+        if ([string]::IsNullOrWhiteSpace($srmodelsPath)) {
+            throw "srmodels.bin is still missing after the retry build."
+        }
+
+        return $srmodelsPath
+    }
+
+    function Detect-WakeWordModel {
+        $candidates = @(
+            (Join-Path $RootDir "sdkconfig.$EnvName")
+            (Join-Path $RootDir "sdkconfig.defaults")
+        )
+
+        foreach ($path in $candidates) {
+            if (-not (Test-Path $path)) {
+                continue
+            }
+
+            $match = Select-String -Path $path -Pattern '^CONFIG_WAKE_WORD_MODEL=\"([^\"]*)\"$' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($match -and $match.Matches.Count -gt 0) {
+                return $match.Matches[0].Groups[1].Value
+            }
+        }
+
+        return "unknown"
+    }
+
+    function Purge-FirmwareCache {
+        New-Item -ItemType Directory -Force -Path $FirmwareDir | Out-Null
+
+        $items = Get-ChildItem -Path $FirmwareDir -Force -ErrorAction SilentlyContinue
+        foreach ($item in $items) {
+            if ($item.Name -eq "README.md") {
+                continue
+            }
+            Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
+        }
+    }
+
+    function Sync-FirmwareCacheFromBuild {
+        Require-File -Path $BuildBootloader
+        Require-File -Path $BuildPartitions
+        Require-File -Path $BuildApp
+
+        $buildSrmodels = Ensure-BuildSrmodels
+        Require-File -Path $buildSrmodels
+
+        New-Item -ItemType Directory -Force -Path $FirmwareDir | Out-Null
+        Copy-Item -Path $BuildBootloader -Destination $FirmwareBootloader -Force
+        Copy-Item -Path $BuildPartitions -Destination $FirmwarePartitions -Force
+        Copy-Item -Path $BuildApp -Destination $FirmwareApp -Force
+        Copy-Item -Path $buildSrmodels -Destination $FirmwareSrmodels -Force
+
+        $wakeModel = Detect-WakeWordModel
+        $gitCommit = "unknown"
+        $gitOut = & git -C $RootDir rev-parse --short HEAD 2>$null
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($gitOut)) {
+            $gitCommit = (@($gitOut) -join "`n").Trim()
+        }
+        $utcNow = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+        $manifest = @"
+GENERATED_AT_UTC=$utcNow
+PIO_ENV=$EnvName
+WAKE_WORD_MODEL=$wakeModel
+GIT_COMMIT=$gitCommit
+"@
+        Set-Content -Path $FirmwareManifest -Value $manifest -Encoding Ascii
+    }
+
     Ensure-Windows
     Ensure-LocalPlatformIO
     $env:PLATFORMIO_CORE_DIR = Join-Path $RootDir ".pio_core"
     $ProjectConfigPath = Resolve-ProjectConfigPath
+
+    Write-Host "Clearing firmware cache in: $FirmwareDir"
+    Purge-FirmwareCache
 
     if (-not $SkipClean) {
         Invoke-Pio -Args @("run", "-e", $EnvName, "-t", "fullclean")
@@ -433,6 +593,9 @@ try {
         Write-Error "Build error: firmware was not uploaded."
         throw
     }
+
+    Sync-FirmwareCacheFromBuild
+    Write-Host "Firmware cache refreshed from the fresh source build."
 
     $uploadPort = Resolve-UploadPort
     if ([string]::IsNullOrWhiteSpace($uploadPort)) {

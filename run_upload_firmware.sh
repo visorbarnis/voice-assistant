@@ -428,8 +428,8 @@ ensure_build_srmodels() {
     return 0
   fi
 
-  echo "srmodels.bin is missing after the first build. Re-running build once now that managed components are available..."
-  if ! "$PIO_BIN" run -e "$ENV_NAME"; then
+  echo "srmodels.bin is missing after the first build. Re-running build once now that managed components are available..." >&2
+  if ! "$PIO_BIN" run -e "$ENV_NAME" >&2; then
     echo "Build error: srmodels.bin was not generated." >&2
     return 1
   fi
