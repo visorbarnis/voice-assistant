@@ -8,7 +8,7 @@ Cross-platform terminal utility with menu-based ncurses-like interface for editi
 - Wake-word model selector in `Server` editor with automatic `esp-sr` discovery/download
 - Wake mode selector in `Server` editor (`normal`/`aggressive` -> `DET_MODE_90/95`, `strict` kept as legacy alias)
 - Wake sensitivity level in `Server` editor (`0..10`, where 10 is most sensitive)
-- Playback volume in `Audio` editor (`0..100%`)
+- Playback volume in `Audio` editor (`0..100%`, mapped internally 1:1 to `0..100%`)
 - Built-in validation and canonical ESP NVS CSV output
 - Portable binaries built with `CGO_ENABLED=0` (no platform GUI libs required)
 

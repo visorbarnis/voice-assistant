@@ -19,7 +19,7 @@ extern "C" {
  * @brief Initialize playback volume service
  *
  * @param volume_percent Playback volume in range 0..100.
- *        Internally mapped to gain 0..250%.
+ *        Internally mapped to gain 0..100%.
  * @return ESP_OK on success, ESP_ERR_INVALID_ARG if out of range
  */
 esp_err_t audio_volume_service_init(uint32_t volume_percent);
@@ -28,7 +28,7 @@ esp_err_t audio_volume_service_init(uint32_t volume_percent);
  * @brief Set playback volume
  *
  * @param volume_percent Playback volume in range 0..100.
- *        Internally mapped to gain 0..250%.
+ *        Internally mapped to gain 0..100%.
  * @return ESP_OK on success, ESP_ERR_INVALID_ARG if out of range
  */
 esp_err_t audio_volume_service_set(uint32_t volume_percent);

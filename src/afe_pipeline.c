@@ -29,7 +29,7 @@ static const char *TAG = "AFE_PIPE";
 
 // Configuration
 #define AFE_SAMPLE_RATE 16000
-#define AFE_MIC_GAIN_SHIFT 10
+#define AFE_MIC_GAIN_SHIFT 11
 #define REF_BUFFER_SIZE (16000 * 2)
 #define AFE_TASK_STACK 12288
 #define AFE_FEED_PRIO 6
@@ -43,7 +43,8 @@ static const char *TAG = "AFE_PIPE";
 #define WAKE_REQUIRE_VAD_STREAK 1
 #define WAKE_MIN_VAD_SPEECH_STREAK 2U
 #define WAKE_REQUIRE_MIN_VOLUME_DBFS 1
-#define WAKE_MIN_VOLUME_DBFS (-65.0f)
+#define WAKE_MIN_VOLUME_DBFS (-60.0f)
+#define MIC_SLOT_SWITCH_MARGIN_PCT 25U
 
 // 10ms frame for AEC synchronization
 #define AEC_FRAME_SAMPLES 160                                 // 10ms @ 16kHz
@@ -137,6 +138,10 @@ static int wake_mode_to_det_mode(const char *wake_mode, bool *legacy_alias_used)
   return DET_MODE_90;
 }
 
+static const char *wake_det_mode_to_string(int det_mode) {
+  return (det_mode == DET_MODE_90) ? "DET_MODE_90" : "DET_MODE_95";
+}
+
 static void wake_guard_arm(void) {
   s_afe.wake_guard_until_us =
       esp_timer_get_time() + (int64_t)WAKE_GUARD_MS * 1000;
@@ -151,6 +156,18 @@ static void wake_update_vad_streak(vad_state_t vad_state) {
   } else {
     s_afe.vad_speech_streak = 0;
   }
+}
+
+static bool mic_slot_margin_reached(int64_t stronger_energy,
+                                    int64_t weaker_energy) {
+  if (stronger_energy <= weaker_energy) {
+    return false;
+  }
+  if (weaker_energy <= 0) {
+    return stronger_energy > 0;
+  }
+  return (stronger_energy * 100LL) >=
+         (weaker_energy * (100LL + (int64_t)MIC_SLOT_SWITCH_MARGIN_PCT));
 }
 
 static bool wake_passes_gates(const afe_fetch_result_t *res) {
@@ -388,6 +405,11 @@ static void handle_fetch_result(afe_fetch_result_t *res) {
         s_afe.session_start_inflight = true;
         xTaskCreatePinnedToCore(start_voice_session_task, "voice_start", 4096,
                                 NULL, 5, NULL, 0);
+      } else {
+        s_afe.vad_speech_streak = 0;
+        wake_guard_arm();
+        ESP_LOGW(TAG, "WakeNet rejected by callback; wake guard rearmed (%d ms)",
+                 WAKE_GUARD_MS);
       }
     }
   }
@@ -399,8 +421,8 @@ static void afe_feed_task(void *arg) {
   ESP_LOGI(TAG, "AFE feed task started");
 
   int accumulated_samples = 0;
-  int mic_slot = -1; // 0 = left, 1 = right
-  bool mic_slot_logged = false;
+  int mic_slot = 0; // 0 = left, 1 = right
+  bool mic_slot_initialized = false;
 
   while (s_afe.initialized) {
     if (s_afe.reset_requested) {
@@ -409,8 +431,8 @@ static void afe_feed_task(void *arg) {
         s_afe.iface->reset_buffer(s_afe.data);
       }
       accumulated_samples = 0;
-      mic_slot = -1;
-      mic_slot_logged = false;
+      mic_slot = 0;
+      mic_slot_initialized = false;
       s_afe.reset_requested = false;
     }
 
@@ -454,18 +476,30 @@ static void afe_feed_task(void *arg) {
         energy_right += llabs((long long)right);
       }
 
-      if (mic_slot < 0 && (energy_left > 0 || energy_right > 0)) {
-        mic_slot = (energy_left >= energy_right) ? 0 : 1;
-        ESP_LOGI(TAG, "I2S mic slot selected: %s",
-                 mic_slot == 0 ? "LEFT" : "RIGHT");
-        mic_slot_logged = true;
+      int candidate_slot = (energy_left >= energy_right) ? 0 : 1;
+      if (!mic_slot_initialized && (energy_left > 0 || energy_right > 0)) {
+        mic_slot = candidate_slot;
+        mic_slot_initialized = true;
+        ESP_LOGI(TAG, "I2S mic slot initialized: %s (L=%lld R=%lld)",
+                 mic_slot == 0 ? "LEFT" : "RIGHT", (long long)energy_left,
+                 (long long)energy_right);
+      } else if (mic_slot_initialized && candidate_slot != mic_slot) {
+        int64_t current_energy = (mic_slot == 0) ? energy_left : energy_right;
+        int64_t candidate_energy =
+            (candidate_slot == 0) ? energy_left : energy_right;
+        if (mic_slot_margin_reached(candidate_energy, current_energy)) {
+          ESP_LOGI(TAG,
+                   "I2S mic slot switched: %s -> %s (L=%lld R=%lld)",
+                   mic_slot == 0 ? "LEFT" : "RIGHT",
+                   candidate_slot == 0 ? "LEFT" : "RIGHT",
+                   (long long)energy_left, (long long)energy_right);
+          mic_slot = candidate_slot;
+        }
       }
-
-      int selected_slot = (mic_slot >= 0) ? mic_slot : 0;
 
       for (size_t i = 0; i < frames_read; i++) {
         if (accumulated_samples < s_afe.feed_chunk) {
-          int32_t sample = s_afe.i2s_raw[i * 2 + selected_slot];
+          int32_t sample = s_afe.i2s_raw[i * 2 + mic_slot];
           s_afe.mic_pcm[accumulated_samples++] = i2s_sample32_to_pcm16(sample);
         }
       }
@@ -567,6 +601,8 @@ esp_err_t afe_pipeline_init(srmodel_list_t *models) {
     wake_level = runtime_cfg->wake_sensitivity_level;
     wake_mode_cfg = runtime_cfg->wake_detection_mode;
   }
+  ESP_LOGI(TAG, "Wake settings from runtime config: mode=%s, level=%u",
+           wake_mode_cfg, (unsigned)wake_level);
   wakenet_mode =
       wake_mode_to_det_mode(wake_mode_cfg, &wake_mode_legacy_alias_used);
   s_afe.config->wakenet_mode = wakenet_mode;
@@ -621,7 +657,9 @@ esp_err_t afe_pipeline_init(srmodel_list_t *models) {
       ESP_LOGW(TAG, "Failed to apply wake threshold %.3f (level=%u)",
                (double)wake_threshold, (unsigned)wake_level);
     } else {
-      ESP_LOGI(TAG, "Wake sensitivity level=%u -> threshold=%.3f",
+      ESP_LOGI(TAG,
+               "Applied wake settings exactly: mode=%s -> %s, level=%u -> threshold=%.3f",
+               wake_mode_cfg, wake_det_mode_to_string(wakenet_mode),
                (unsigned)wake_level, (double)wake_threshold);
     }
   }
@@ -629,8 +667,7 @@ esp_err_t afe_pipeline_init(srmodel_list_t *models) {
     ESP_LOGW(TAG, "Wake mode 'strict' is legacy alias of 'aggressive'");
   }
   ESP_LOGI(TAG, "Wake detection mode=%s (%s)",
-           wake_mode_cfg,
-           (wakenet_mode == DET_MODE_90) ? "DET_MODE_90" : "DET_MODE_95");
+           wake_mode_cfg, wake_det_mode_to_string(wakenet_mode));
 
   s_afe.feed_chunk = s_afe.iface->get_feed_chunksize(s_afe.data);
   s_afe.fetch_chunk = s_afe.iface->get_fetch_chunksize(s_afe.data);

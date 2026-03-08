@@ -15,7 +15,7 @@
 static const char *TAG = "AUDIO_VOL";
 static volatile uint32_t s_volume_percent = 100;
 static bool s_initialized = false;
-static const uint32_t MAX_GAIN_PERCENT = 250;
+static const uint32_t MAX_GAIN_PERCENT = 100;
 
 static bool is_valid_volume(uint32_t volume_percent) {
   return volume_percent <= 100;

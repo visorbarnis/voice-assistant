@@ -114,7 +114,13 @@ typedef struct {
 } voice_client_state_t;
 
 static voice_client_state_t s_state = {0};
+typedef enum {
+  DUPLEX_MODE_FULL = 0,
+  DUPLEX_MODE_HALF = 1,
+} duplex_mode_t;
+
 static bool s_half_duplex_mode = false;
+static duplex_mode_t s_effective_duplex_mode = DUPLEX_MODE_FULL;
 static const runtime_config_t *s_cfg = NULL;
 
 // Packet descriptor for sending
@@ -199,21 +205,59 @@ static void id_ring_reset(id_ring_t *ring) {
   ring->count = 0;
 }
 
-static void resolve_speak_mode_config(void) {
-  const char *mode = s_cfg ? s_cfg->speak_mode : CONFIG_SPEAK_MODE;
+static const char *duplex_mode_to_string(duplex_mode_t mode) {
+  return (mode == DUPLEX_MODE_HALF) ? "half-duplex" : "full-duplex";
+}
 
-  if (strcmp(mode, "half-duplex") == 0 || strcmp(mode, "hal-duplex") == 0) {
-    s_half_duplex_mode = true;
-  } else if (strcmp(mode, "full-duplex") == 0 ||
-             strcmp(mode, "full-diplex") == 0) {
-    s_half_duplex_mode = false;
-  } else {
-    s_half_duplex_mode = false;
-    ESP_LOGW(TAG, "Unknown speak_mode='%s', using full-duplex", mode);
+static bool parse_duplex_mode(const char *mode, duplex_mode_t *out_mode) {
+  if (!mode || !out_mode) {
+    return false;
   }
 
-  ESP_LOGI(TAG, "Speak mode: %s",
-           s_half_duplex_mode ? "half-duplex" : "full-duplex");
+  if (strcmp(mode, "half-duplex") == 0 || strcmp(mode, "hal-duplex") == 0) {
+    *out_mode = DUPLEX_MODE_HALF;
+    return true;
+  }
+
+  if (strcmp(mode, "full-duplex") == 0 || strcmp(mode, "full-diplex") == 0) {
+    *out_mode = DUPLEX_MODE_FULL;
+    return true;
+  }
+
+  return false;
+}
+
+static void resolve_speak_mode_config(void) {
+  const char *speak_mode = s_cfg ? s_cfg->speak_mode : CONFIG_SPEAK_MODE;
+  const char *client_mode =
+      s_cfg ? s_cfg->voice_client_mode : CONFIG_VOICE_CLIENT_MODE;
+  duplex_mode_t parsed_speak_mode = DUPLEX_MODE_FULL;
+  duplex_mode_t parsed_client_mode = DUPLEX_MODE_FULL;
+  bool speak_mode_valid = parse_duplex_mode(speak_mode, &parsed_speak_mode);
+  bool client_mode_valid = parse_duplex_mode(client_mode, &parsed_client_mode);
+
+  if (!speak_mode_valid) {
+    ESP_LOGW(TAG, "Unknown speak_mode='%s', using full-duplex", speak_mode);
+    parsed_speak_mode = DUPLEX_MODE_FULL;
+  }
+
+  if (!client_mode_valid) {
+    ESP_LOGW(TAG,
+             "Unknown client_mode='%s'; advertising effective controller mode '%s'",
+             client_mode, duplex_mode_to_string(parsed_speak_mode));
+  } else if (parsed_client_mode != parsed_speak_mode) {
+    ESP_LOGW(TAG,
+             "Config mismatch: speak_mode='%s', client_mode='%s'; "
+             "advertising effective controller mode '%s'",
+             speak_mode, client_mode, duplex_mode_to_string(parsed_speak_mode));
+  }
+
+  s_effective_duplex_mode = parsed_speak_mode;
+  s_half_duplex_mode = (s_effective_duplex_mode == DUPLEX_MODE_HALF);
+
+  ESP_LOGI(TAG, "Speak mode: %s", duplex_mode_to_string(s_effective_duplex_mode));
+  ESP_LOGI(TAG, "Effective client mode: %s",
+           duplex_mode_to_string(s_effective_duplex_mode));
 }
 
 // ----------------------------------------------------------------------------
@@ -1049,7 +1093,8 @@ static esp_err_t ensure_ws_client_locked(void) {
   int header_len = snprintf(s_state.headers, sizeof(s_state.headers),
                             "Authorization: Bearer %s\r\n"
                             "X-Client-Mode: %s\r\n",
-                            s_cfg->voice_api_key, s_cfg->voice_client_mode);
+                            s_cfg->voice_api_key,
+                            duplex_mode_to_string(s_effective_duplex_mode));
   if (header_len < 0 || (size_t)header_len >= sizeof(s_state.headers)) {
     ESP_LOGE(TAG, "WS header buffer overflow at base headers");
     return ESP_ERR_INVALID_SIZE;
@@ -1097,7 +1142,7 @@ static esp_err_t ensure_ws_client_locked(void) {
   esp_websocket_register_events(s_state.ws_client, WEBSOCKET_EVENT_ANY,
                                 websocket_event_handler, NULL);
   ESP_LOGI(TAG, "WS custom headers: client_mode=%s, location=%s, parameter=%s",
-           s_cfg->voice_client_mode,
+           duplex_mode_to_string(s_effective_duplex_mode),
            (s_cfg->server_location[0] != '\0') ? s_cfg->server_location : "(empty)",
            (s_cfg->server_parameter[0] != '\0') ? s_cfg->server_parameter : "(empty)");
   ESP_LOGI(TAG, "WebSocket client prepared: %s", s_state.uri);

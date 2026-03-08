@@ -549,6 +549,83 @@ detect_cached_wake_word_model() {
   sed -n 's/^WAKE_WORD_MODEL=//p' "$FIRMWARE_MANIFEST" | head -n1
 }
 
+detect_cached_source_fingerprint() {
+  if [[ ! -f "$FIRMWARE_MANIFEST" ]]; then
+    return 1
+  fi
+  sed -n 's/^SOURCE_FINGERPRINT=//p' "$FIRMWARE_MANIFEST" | head -n1
+}
+
+compute_source_fingerprint() {
+  "$PIO_PYTHON" - "$ROOT_DIR" "$ENV_NAME" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+project_root = Path(sys.argv[1])
+env_name = sys.argv[2]
+
+paths_to_scan = [
+    project_root / "platformio.ini",
+    project_root / "partitions.csv",
+    project_root / "sdkconfig.defaults",
+    project_root / f"sdkconfig.{env_name}",
+    project_root / "tools" / "generate_srmodels.py",
+    project_root / "tools" / "add_srmodels_image.py",
+    project_root / "tools" / "flash_srmodels.py",
+    project_root / "tools" / "generate_nvs_settings.py",
+    project_root / "src",
+    project_root / "include",
+    project_root / "lib",
+    project_root / "components",
+    project_root / "managed_components",
+]
+
+digest = hashlib.sha256()
+files = []
+
+for path in paths_to_scan:
+    if path.is_file():
+        files.append(path)
+        continue
+    if path.is_dir():
+        for file_path in sorted(path.rglob("*")):
+            if file_path.is_file():
+                files.append(file_path)
+
+for file_path in sorted(files):
+    rel_path = file_path.relative_to(project_root).as_posix()
+    digest.update(rel_path.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(file_path.read_bytes())
+    digest.update(b"\0")
+
+print(digest.hexdigest())
+PY
+}
+
+cache_matches_current_sources() {
+  local cached_fingerprint current_fingerprint
+  cached_fingerprint="$(detect_cached_source_fingerprint || true)"
+  if [[ -z "$cached_fingerprint" ]]; then
+    echo "Firmware cache fingerprint is missing. Rebuild required."
+    return 1
+  fi
+
+  current_fingerprint="$(compute_source_fingerprint || true)"
+  if [[ -z "$current_fingerprint" ]]; then
+    echo "Failed to compute current source fingerprint. Rebuild required."
+    return 1
+  fi
+
+  if [[ "$cached_fingerprint" != "$current_fingerprint" ]]; then
+    echo "Firmware cache fingerprint differs from current sources. Rebuild required."
+    return 1
+  fi
+
+  return 0
+}
+
 sync_wake_word_model_with_settings() {
   local settings_model current_model
   settings_model="$(detect_settings_wake_word_model || true)"
@@ -778,16 +855,18 @@ sync_firmware_cache_from_build() {
   # settings.bin is intentionally not cached in firmware/ to avoid committing local settings.
   rm -f "$FIRMWARE_SETTINGS"
 
-  local wake_model git_commit utc_now
+  local wake_model git_commit utc_now source_fingerprint
   wake_model="$(detect_wake_word_model)"
   git_commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
   utc_now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  source_fingerprint="$(compute_source_fingerprint)"
 
   cat > "$FIRMWARE_MANIFEST" <<EOF
 GENERATED_AT_UTC=$utc_now
 PIO_ENV=$ENV_NAME
 WAKE_WORD_MODEL=$wake_model
 GIT_COMMIT=$git_commit
+SOURCE_FINGERPRINT=$source_fingerprint
 FLASH_MODE=$FLASH_MODE
 FLASH_FREQ=$FLASH_FREQ
 FLASH_SIZE=$FLASH_SIZE
@@ -916,7 +995,7 @@ ensure_local_platformio
 export PLATFORMIO_CORE_DIR="$ROOT_DIR/.pio_core"
 sync_wake_word_model_with_settings
 
-if cache_is_ready && cache_wake_word_model_matches_settings; then
+if cache_is_ready && cache_wake_word_model_matches_settings && cache_matches_current_sources; then
   echo "Found ready firmware cache in $FIRMWARE_DIR. Rebuilding settings and uploading..."
   upload_cached_firmware
 else

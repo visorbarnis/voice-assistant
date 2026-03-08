@@ -198,7 +198,7 @@ func (s *uiState) buildMainUI() {
 			pickFields(
 				fieldID("audio_settings", "volume_pct"),
 			),
-			"Tips:\n- range: 0..100 (%)\n- internally mapped to 0..250% PCM gain",
+			"Tips:\n- range: 0..100 (%)\n- mapped 1:1 to PCM gain 0..100%",
 		)
 	})
 	s.menu.AddItem("Save", "save to current file", 's', func() {
