@@ -142,6 +142,28 @@ static inline int16_t i2s_sample32_to_pcm16(int32_t sample) {
   return (int16_t)val;
 }
 
+static int16_t pcm16_peak_abs(const int16_t *samples, size_t sample_count) {
+  int32_t peak = 0;
+  if (!samples) {
+    return 0;
+  }
+
+  for (size_t i = 0; i < sample_count; i++) {
+    int32_t sample = samples[i];
+    if (sample < 0) {
+      sample = -sample;
+    }
+    if (sample > peak) {
+      peak = sample;
+    }
+  }
+
+  if (peak > INT16_MAX) {
+    peak = INT16_MAX;
+  }
+  return (int16_t)peak;
+}
+
 // ============================================================================
 // NVS initialization
 // ============================================================================
@@ -359,6 +381,10 @@ static void play_beep(int freq_hz, int duration_ms) {
   }
 
   audio_volume_service_apply_pcm16(tone_buffer, (size_t)sample_count * 2);
+  ESP_LOGI(TAG, "Beep prepared: volume=%lu%%, peak=%d/%d",
+           (unsigned long)audio_volume_service_get(),
+           (int)pcm16_peak_abs(tone_buffer, (size_t)sample_count * 2),
+           INT16_MAX);
 
   // Play tone
   size_t bytes_written = 0;

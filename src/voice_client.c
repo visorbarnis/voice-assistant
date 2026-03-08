@@ -492,12 +492,19 @@ static bool parse_volume_percent(const cJSON *item, const char *field_name,
     return false;
   }
 
-  // All volume values are interpreted strictly as percentages in range 0..100.
-  if (raw < 0.0 || raw > 100.0) {
+  // volume_pct is always a percentage (0..100).
+  // Legacy websocket senders may still use normalized fractions in (0, 1)
+  // for value/volume. Accept them without treating integer 1 as 100%.
+  double percent = raw;
+  if (strcmp(field_name, "volume_pct") != 0 && raw > 0.0 && raw < 1.0) {
+    percent = raw * 100.0;
+  }
+
+  if (percent < 0.0 || percent > 100.0) {
     return false;
   }
 
-  int rounded = (int)(raw + 0.5);
+  int rounded = (int)(percent + 0.5);
   if (rounded > 100) {
     rounded = 100;
   }
@@ -550,7 +557,9 @@ static bool handle_set_volume_command(const char *payload, size_t payload_len) {
   }
 
   if (!volume_field) {
-    ESP_LOGW(TAG, "set_volume ignored: invalid value (expected 0..100 percent)");
+    ESP_LOGW(TAG,
+             "set_volume ignored: invalid value (expected 0..100 percent or "
+             "legacy 0.x normalized value)");
     goto cleanup;
   }
 
