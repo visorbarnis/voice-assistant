@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+ENV_NAME="${PIO_ENV:-esp32-s3-devkitc-1}"
 LOCAL_DIR="$ROOT_DIR/.local"
 PIO_VENV_DIR="$LOCAL_DIR/pio-venv"
 PIO_PYTHON="$PIO_VENV_DIR/bin/python"
@@ -11,6 +12,17 @@ PIO_BIN="$PIO_VENV_DIR/bin/pio"
 MINIFORGE_DIR="$LOCAL_DIR/miniforge3"
 MINIFORGE_PYTHON="$MINIFORGE_DIR/bin/python3"
 UPLOAD_PORT_FILE="$LOCAL_DIR/upload_port"
+FIRMWARE_DIR="$ROOT_DIR/firmware"
+FIRMWARE_MANIFEST="$FIRMWARE_DIR/manifest.env"
+FIRMWARE_BOOTLOADER="$FIRMWARE_DIR/bootloader.bin"
+FIRMWARE_PARTITIONS="$FIRMWARE_DIR/partitions.bin"
+FIRMWARE_APP="$FIRMWARE_DIR/firmware.bin"
+FIRMWARE_SRMODELS="$FIRMWARE_DIR/srmodels.bin"
+BUILD_DIR="$ROOT_DIR/.pio/build/$ENV_NAME"
+BUILD_BOOTLOADER="$BUILD_DIR/bootloader.bin"
+BUILD_PARTITIONS="$BUILD_DIR/partitions.bin"
+BUILD_APP="$BUILD_DIR/firmware.bin"
+BUILD_SRMODELS="$BUILD_DIR/srmodels/srmodels.bin"
 
 resolve_python3() {
   local candidates=(
@@ -221,6 +233,58 @@ ensure_local_platformio() {
 ensure_local_platformio
 export PLATFORMIO_CORE_DIR="$ROOT_DIR/.pio_core"
 
+require_file() {
+  local path="$1"
+  if [[ ! -s "$path" ]]; then
+    echo "Required file is missing or empty: $path" >&2
+    return 1
+  fi
+}
+
+detect_wake_word_model() {
+  local config_file model
+  for config_file in "$ROOT_DIR/sdkconfig.$ENV_NAME" "$ROOT_DIR/sdkconfig.defaults"; do
+    if [[ -f "$config_file" ]]; then
+      model="$(sed -n 's/^CONFIG_WAKE_WORD_MODEL=\"\([^\"]*\)\"$/\1/p' "$config_file" | head -n1)"
+      if [[ -n "$model" ]]; then
+        echo "$model"
+        return 0
+      fi
+    fi
+  done
+  echo "unknown"
+}
+
+purge_firmware_cache() {
+  mkdir -p "$FIRMWARE_DIR"
+  find "$FIRMWARE_DIR" -mindepth 1 -maxdepth 1 ! -name 'README.md' -exec rm -rf {} +
+}
+
+sync_firmware_cache_from_build() {
+  require_file "$BUILD_BOOTLOADER"
+  require_file "$BUILD_PARTITIONS"
+  require_file "$BUILD_APP"
+  require_file "$BUILD_SRMODELS"
+
+  mkdir -p "$FIRMWARE_DIR"
+  cp -f "$BUILD_BOOTLOADER" "$FIRMWARE_BOOTLOADER"
+  cp -f "$BUILD_PARTITIONS" "$FIRMWARE_PARTITIONS"
+  cp -f "$BUILD_APP" "$FIRMWARE_APP"
+  cp -f "$BUILD_SRMODELS" "$FIRMWARE_SRMODELS"
+
+  local wake_model git_commit utc_now
+  wake_model="$(detect_wake_word_model)"
+  git_commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  utc_now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  cat > "$FIRMWARE_MANIFEST" <<EOF
+GENERATED_AT_UTC=$utc_now
+PIO_ENV=$ENV_NAME
+WAKE_WORD_MODEL=$wake_model
+GIT_COMMIT=$git_commit
+EOF
+}
+
 resolve_upload_port() {
   local port=""
   local cached_port=""
@@ -362,13 +426,18 @@ assert_upload_port_access() {
   fi
 }
 
-"$PIO_BIN" run -t fullclean
+echo "Clearing firmware cache in: $FIRMWARE_DIR"
+purge_firmware_cache
+"$PIO_BIN" run -e "$ENV_NAME" -t fullclean
 rm -f sdkconfig
 
-if ! "$PIO_BIN" run; then
+if ! "$PIO_BIN" run -e "$ENV_NAME"; then
   echo "Build error: firmware was not uploaded." >&2
   exit 1
 fi
+
+sync_firmware_cache_from_build
+echo "Firmware cache refreshed from the fresh source build."
 
 UPLOAD_PORT_VALUE="$(resolve_upload_port || true)"
 if [[ -z "$UPLOAD_PORT_VALUE" ]]; then
@@ -382,4 +451,4 @@ fi
 
 assert_upload_port_access "$UPLOAD_PORT_VALUE"
 echo "Using upload port: $UPLOAD_PORT_VALUE"
-"$PIO_BIN" run -t upload -t monitor --upload-port "$UPLOAD_PORT_VALUE" --monitor-port "$UPLOAD_PORT_VALUE"
+"$PIO_BIN" run -e "$ENV_NAME" -t upload -t monitor --upload-port "$UPLOAD_PORT_VALUE" --monitor-port "$UPLOAD_PORT_VALUE"
