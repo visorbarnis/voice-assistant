@@ -5,6 +5,9 @@ Expected CSV format follows ESP-IDF nvs_partition_gen.py conventions.
 If settings.csv is missing, generation is skipped.
 """
 
+import csv
+import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -15,6 +18,7 @@ from SCons.Script import Import  # type: ignore
 Import("env")  # type: ignore
 
 NVS_PARTITION_NAME = "nvs"
+SETTINGS_META_SUFFIX = ".meta.json"
 SETTINGS_CSV_CANDIDATES = [
     "settings.csv",
     "config/settings.csv",
@@ -108,6 +112,40 @@ def _ensure_nvs_generator_module(python_exe: str):
         raise SystemExit(1) from exc
 
 
+def _sha256_file(path: Path):
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_volume_percent(settings_csv: Path):
+    with settings_csv.open("r", encoding="utf-8", newline="") as file:
+        reader = csv.reader(file)
+        current_namespace = ""
+        for row in reader:
+            if len(row) < 2:
+                continue
+
+            key = row[0].strip()
+            row_type = row[1].strip()
+            value = row[3].strip() if len(row) > 3 else ""
+
+            if row_type == "namespace":
+                current_namespace = key
+                continue
+
+            if (
+                row_type == "data"
+                and current_namespace == "audio_settings"
+                and key == "volume_pct"
+            ):
+                return value or None
+
+    return None
+
+
 print("--- [NVS] Generating settings.bin ---")
 
 project_dir = Path(env.subst("$PROJECT_DIR"))
@@ -175,4 +213,22 @@ else:
         raise SystemExit(exc.returncode) from exc
 
     size_bytes = settings_bin.stat().st_size
+    settings_meta = settings_bin.with_name(settings_bin.name + SETTINGS_META_SUFFIX)
+    volume_percent = _read_volume_percent(settings_csv)
+    metadata = {
+        "settings_csv": str(settings_csv),
+        "settings_csv_sha256": _sha256_file(settings_csv),
+        "settings_bin": str(settings_bin),
+        "settings_bin_sha256": _sha256_file(settings_bin),
+        "nvs_offset": nvs_offset,
+        "nvs_size": nvs_size,
+        "volume_pct": volume_percent,
+    }
+    settings_meta.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
     print(f"--- [NVS] settings.bin generated ({size_bytes} bytes)")
+    print(f"--- [NVS] settings metadata: {settings_meta}")
+    if volume_percent is not None:
+        print(f"--- [NVS] settings volume_pct={volume_percent}%")
