@@ -25,7 +25,7 @@ BUILD_DIR="$ROOT_DIR/.pio/build/$ENV_NAME"
 BUILD_BOOTLOADER="$BUILD_DIR/bootloader.bin"
 BUILD_PARTITIONS="$BUILD_DIR/partitions.bin"
 BUILD_APP="$BUILD_DIR/firmware.bin"
-BUILD_SRMODELS="$BUILD_DIR/srmodels/srmodels.bin"
+BUILD_SRMODELS_DEFAULT="$BUILD_DIR/srmodels/srmodels.bin"
 BUILD_SETTINGS="$BUILD_DIR/settings.bin"
 
 PARTITIONS_CSV="$ROOT_DIR/partitions.csv"
@@ -399,6 +399,50 @@ require_file() {
   fi
 }
 
+find_build_srmodels() {
+  local candidate
+  for candidate in \
+    "$BUILD_SRMODELS_DEFAULT" \
+    "$BUILD_DIR/srmodels.bin"
+  do
+    if [[ -s "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  candidate="$(find "$BUILD_DIR" -maxdepth 3 -type f -name 'srmodels.bin' 2>/dev/null | head -n1 || true)"
+  if [[ -n "$candidate" && -s "$candidate" ]]; then
+    echo "$candidate"
+    return 0
+  fi
+
+  return 1
+}
+
+ensure_build_srmodels() {
+  local srmodels_path
+  srmodels_path="$(find_build_srmodels || true)"
+  if [[ -n "$srmodels_path" ]]; then
+    echo "$srmodels_path"
+    return 0
+  fi
+
+  echo "srmodels.bin is missing after the first build. Re-running build once now that managed components are available..."
+  if ! "$PIO_BIN" run -e "$ENV_NAME"; then
+    echo "Build error: srmodels.bin was not generated." >&2
+    return 1
+  fi
+
+  srmodels_path="$(find_build_srmodels || true)"
+  if [[ -z "$srmodels_path" ]]; then
+    echo "srmodels.bin is still missing after the retry build." >&2
+    return 1
+  fi
+
+  echo "$srmodels_path"
+}
+
 find_settings_csv() {
   local candidate
   for candidate in "$ROOT_DIR/settings.csv" "$ROOT_DIR/config/settings.csv"; do
@@ -764,17 +808,19 @@ cache_is_ready() {
 }
 
 sync_firmware_cache_from_build() {
+  local build_srmodels
   require_file "$BUILD_BOOTLOADER"
   require_file "$BUILD_PARTITIONS"
   require_file "$BUILD_APP"
-  require_file "$BUILD_SRMODELS"
+  build_srmodels="$(ensure_build_srmodels)"
+  require_file "$build_srmodels"
   load_partition_offsets
 
   mkdir -p "$FIRMWARE_DIR"
   cp -f "$BUILD_BOOTLOADER" "$FIRMWARE_BOOTLOADER"
   cp -f "$BUILD_PARTITIONS" "$FIRMWARE_PARTITIONS"
   cp -f "$BUILD_APP" "$FIRMWARE_APP"
-  cp -f "$BUILD_SRMODELS" "$FIRMWARE_SRMODELS"
+  cp -f "$build_srmodels" "$FIRMWARE_SRMODELS"
   # settings.bin is intentionally not cached in firmware/ to avoid committing local settings.
   rm -f "$FIRMWARE_SETTINGS"
 
